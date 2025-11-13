@@ -1,0 +1,51 @@
+# CMake build artifacts
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Compiled binaries
+aod-server
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Protobuf generated files
+*.pb.cc
+*.pb.h
+*_pb2.py
+
+# User-specific configuration (not committed)
+config.yml
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Log files
+*.log
+
+# Core dumps
+core
+core.*
+
+# Python cache (if we add Python tools later)
+__pycache__/
+*.pyc
+*.pyo
+
+# Backup files
+*.bak
+*~
+/old

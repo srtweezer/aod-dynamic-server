@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package aod;
+
+// ============================================================================
+// Ping Command
+// ============================================================================
+
+// Request to ping the server (health check)
+message PingRequest {
+  // Empty for now - could add client timestamp later
+}
+
+// Response from ping command
+message PingResponse {
+  // Server timestamp in nanoseconds since epoch
+  int64 timestamp_ns = 1;
+}
+
+// ============================================================================
+// Top-Level Request/Response Wrappers
+// ============================================================================
+
+// Client sends Request messages to server
+message Request {
+  oneof command {
+    PingRequest ping = 1;
+    // Future commands will be added here:
+    // GenerateWaveformRequest generate_waveform = 2;
+    // StopRequest stop = 3;
+    // etc.
+  }
+}
+
+// Server sends Response messages back to client
+message Response {
+  oneof result {
+    PingResponse ping = 1;
+    // Future responses will be added here:
+    // GenerateWaveformResponse generate_waveform = 2;
+    // ErrorResponse error = 3;
+    // etc.
+  }
+}
