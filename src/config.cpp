@@ -49,9 +49,6 @@ void Config::parseServer(const YAML::Node& node) {
 }
 
 void Config::parseAWG(const YAML::Node& node) {
-    if (node["device_path"]) {
-        awg_.device_path = node["device_path"].as<std::string>();
-    }
     if (node["serial_number"]) {
         awg_.serial_number = node["serial_number"].as<int>();
     }

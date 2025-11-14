@@ -4,7 +4,7 @@
 namespace aod {
 
 AWGInterface::AWGInterface(const AWGConfig& config)
-    : config_(config), connected_(false) {
+    : config_(config), connected_(false), card_handle_(nullptr) {
 }
 
 AWGInterface::~AWGInterface() {
@@ -12,46 +12,87 @@ AWGInterface::~AWGInterface() {
 }
 
 bool AWGInterface::connect() {
-    // Placeholder implementation
-    std::cout << "[AWG] Connecting to AWG (placeholder)..." << std::endl;
-    std::cout << "[AWG]   Device: " << config_.device_path << std::endl;
-    std::cout << "[AWG]   Serial: " << config_.serial_number << std::endl;
+    std::cout << "[AWG] Scanning for Spectrum AWG devices..." << std::endl;
+    std::cout << "[AWG]   Target serial number: " << config_.serial_number << std::endl;
     std::cout << "[AWG]   Sample rate: " << config_.sample_rate << " S/s" << std::endl;
     std::cout << "[AWG]   Channels: " << config_.num_channels << std::endl;
     std::cout << "[AWG]   Max amplitude: " << config_.max_amplitude << " V" << std::endl;
 
-    // TODO: Replace with actual Spectrum SDK initialization
-    // Example (when SDK is integrated):
-    // card_handle_ = spcm_hOpen(config_.device_path.c_str());
-    // if (card_handle_ == nullptr) {
-    //     std::cerr << "[AWG] Failed to open device" << std::endl;
-    //     return false;
-    // }
-    // // Verify serial number
-    // int32_t serial;
-    // spcm_dwGetParam_i32(card_handle_, SPC_PCISERIALNO, &serial);
-    // if (config_.serial_number != 0 && serial != config_.serial_number) {
-    //     std::cerr << "[AWG] Serial number mismatch" << std::endl;
-    //     return false;
-    // }
+    // Scan for devices /dev/spcm0 through /dev/spcm15
+    const int MAX_CARDS = 16;
+    bool found = false;
 
-    connected_ = true;
-    std::cout << "[AWG] Connected successfully (placeholder)" << std::endl;
+    for (int card_idx = 0; card_idx < MAX_CARDS && !found; card_idx++) {
+        char device_path[64];
+        snprintf(device_path, sizeof(device_path), "/dev/spcm%d", card_idx);
+
+        // Try to open the device
+        drv_handle hCard = spcm_hOpen(device_path);
+        if (!hCard) {
+            // Device doesn't exist or can't be opened - this is OK, continue scanning
+            continue;
+        }
+
+        // Read card information
+        int32 lCardType, lSerialNumber, lFncType;
+        char szCardName[20] = {};
+
+        spcm_dwGetParam_i32(hCard, SPC_PCITYP, &lCardType);
+        spcm_dwGetParam_ptr(hCard, SPC_PCITYP, szCardName, sizeof(szCardName));
+        spcm_dwGetParam_i32(hCard, SPC_PCISERIALNO, &lSerialNumber);
+        spcm_dwGetParam_i32(hCard, SPC_FNCTYPE, &lFncType);
+
+        std::cout << "[AWG] Found device " << device_path << ": "
+                  << szCardName << " SN " << lSerialNumber;
+
+        // Check if it's a generator card
+        if (lFncType != SPCM_TYPE_AO) {
+            std::cout << " (not a generator, skipping)" << std::endl;
+            spcm_vClose(hCard);
+            continue;
+        }
+
+        // Check serial number match
+        if (config_.serial_number != 0 && lSerialNumber != config_.serial_number) {
+            std::cout << " (serial mismatch, skipping)" << std::endl;
+            spcm_vClose(hCard);
+            continue;
+        }
+
+        // Found matching card!
+        std::cout << " ✓" << std::endl;
+        card_handle_ = hCard;
+        connected_ = true;
+        found = true;
+
+        std::cout << "[AWG] Connected to " << device_path
+                  << " (" << szCardName << " SN " << lSerialNumber << ")" << std::endl;
+    }
+
+    if (!found) {
+        if (config_.serial_number != 0) {
+            std::cerr << "[AWG] Error: No generator card found with serial number "
+                      << config_.serial_number << std::endl;
+        } else {
+            std::cerr << "[AWG] Error: No generator cards found" << std::endl;
+        }
+        return false;
+    }
+
     return true;
 }
 
 void AWGInterface::disconnect() {
     if (connected_) {
-        std::cout << "[AWG] Disconnecting from AWG (placeholder)..." << std::endl;
+        std::cout << "[AWG] Disconnecting from AWG..." << std::endl;
 
-        // TODO: Replace with actual Spectrum SDK cleanup
-        // if (card_handle_) {
-        //     spcm_vClose(card_handle_);
-        //     card_handle_ = nullptr;
-        // }
+        if (card_handle_) {
+            spcm_vClose(card_handle_);
+            card_handle_ = nullptr;
+        }
 
         connected_ = false;
-        std::cout << "[AWG] Disconnected (placeholder)" << std::endl;
+        std::cout << "[AWG] Disconnected" << std::endl;
     }
 }
 

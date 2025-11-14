@@ -10,10 +10,9 @@ server:
   bind_address: "tcp://*"
 
 awg:
-  # Path to Spectrum Instrumentation AWG device
-  device_path: "/dev/spcm0"
-
-  # Serial number of the AWG card (for verification)
+  # Serial number of the AWG card (REQUIRED for card identification)
+  # The server will scan /dev/spcm0-15 and connect to the matching card
+  # Set to 0 to connect to the first available generator card
   serial_number: 0
 
   # Sample rate in samples per second

@@ -4,6 +4,11 @@
 #include "config.h"
 #include <string>
 
+#include <spectrum/dlltyp.h>
+#include <spectrum/regs.h>
+#include <spectrum/spcerr.h>
+#include <spectrum/spcm_drv.h>
+
 namespace aod {
 
 // Interface to Spectrum Instrumentation AWG hardware
@@ -33,9 +38,7 @@ public:
 private:
     AWGConfig config_;
     bool connected_;
-
-    // Future: Spectrum SDK card handle
-    // void* card_handle_;
+    drv_handle card_handle_;
 };
 
 } // namespace aod

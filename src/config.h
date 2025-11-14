@@ -14,9 +14,8 @@ struct ServerConfig {
 
 // AWG configuration
 struct AWGConfig {
-    std::string device_path = "/dev/spcm0";
-    int serial_number = 0;
-    int sample_rate = 200000000;  // 200 MSample/s
+    int serial_number = 0;         // Serial number for device identification
+    int sample_rate = 200000000;   // 200 MSample/s
     double max_amplitude = 0.18;   // Volts
     int num_channels = 4;
 

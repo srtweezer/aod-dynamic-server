@@ -18,11 +18,15 @@ target_link_libraries(aod-server
     pthread
 )
 
+# Link Spectrum library (required)
+target_link_libraries(aod-server ${SPECTRUM_LIBRARY})
+
 # Include directories
 target_include_directories(aod-server PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
     ${ZMQ_INCLUDE_DIRS}
+    ${CMAKE_SOURCE_DIR}/external
 )
 
 # Install target

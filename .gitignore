@@ -49,3 +49,4 @@ __pycache__/
 *.bak
 *~
 /old
+/ext_resources
