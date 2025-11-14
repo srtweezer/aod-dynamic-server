@@ -1,5 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Load user configuration
+if(EXISTS ${CMAKE_SOURCE_DIR}/config.cmake)
+    include(${CMAKE_SOURCE_DIR}/config.cmake)
+else()
+    message(FATAL_ERROR
+        "Configuration file not found!\n"
+        "Please copy config.cmake.template to config.cmake and customize it:\n"
+        "  cp config.cmake.template config.cmake\n"
+        "Then edit config.cmake with your hardware parameters.")
+endif()
+
 # Start with C++ only - CUDA will be enabled when needed
 project(aod-dynamic-server LANGUAGES CXX)
 
@@ -31,9 +42,6 @@ find_package(PkgConfig REQUIRED)
 # Find ZeroMQ
 pkg_check_modules(ZMQ REQUIRED libzmq)
 
-# Find yaml-cpp
-find_package(yaml-cpp REQUIRED)
-
 # Spectrum Instrumentation SDK
 set(SPECTRUM_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/external/spectrum)
 set(SPECTRUM_LIBRARY /usr/lib/x86_64-linux-gnu/libspcm_linux.so)
@@ -46,6 +54,26 @@ else()
     message(FATAL_ERROR "Spectrum library not found at ${SPECTRUM_LIBRARY}\n"
             "Please install the Spectrum Instrumentation SDK or update SPECTRUM_LIBRARY path in CMakeLists.txt")
 endif()
+
+# Convert CMake booleans to C++ booleans
+if(AWG_EXTERNAL_CLOCK_ENABLED)
+    set(AWG_EXTERNAL_CLOCK_ENABLED_CPP "true")
+else()
+    set(AWG_EXTERNAL_CLOCK_ENABLED_CPP "false")
+endif()
+
+if(GPU_ENABLED)
+    set(GPU_ENABLED_CPP "true")
+else()
+    set(GPU_ENABLED_CPP "false")
+endif()
+
+# Generate configuration header from template
+configure_file(
+    ${CMAKE_SOURCE_DIR}/src/config.h.in
+    ${CMAKE_BINARY_DIR}/config.h
+    @ONLY
+)
 
 # Include directories
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
@@ -63,6 +91,12 @@ message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  CUDA Architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 message(STATUS "  Protobuf version: ${Protobuf_VERSION}")
 message(STATUS "  ZeroMQ found: ${ZMQ_FOUND}")
-message(STATUS "  yaml-cpp found: ${yaml-cpp_FOUND}")
 message(STATUS "  Spectrum SDK found: ${SPECTRUM_FOUND}")
+message(STATUS "")
+message(STATUS "Hardware Configuration:")
+message(STATUS "  Server port: ${SERVER_PORT}")
+message(STATUS "  AWG serial number: ${AWG_SERIAL_NUMBER}")
+message(STATUS "  AWG channels: ${AWG_NUM_CHANNELS}")
+message(STATUS "  AWG sample rate: ${AWG_SAMPLE_RATE} Hz")
+message(STATUS "  Max tones: ${AOD_MAX_TONES}")
 message(STATUS "")

@@ -1,12 +1,13 @@
 #include "server.h"
 #include "awg_interface.h"
+#include <config.h>
 #include <iostream>
 #include <chrono>
 
 namespace aod {
 
-AODServer::AODServer(const ServerConfig& config, std::shared_ptr<AWGInterface> awg)
-    : config_(config), awg_(awg), running_(false) {
+AODServer::AODServer(std::shared_ptr<AWGInterface> awg)
+    : awg_(awg), running_(false) {
 }
 
 AODServer::~AODServer() {
@@ -14,6 +15,8 @@ AODServer::~AODServer() {
 }
 
 bool AODServer::initialize() {
+    using namespace aod::config;
+
     try {
         // Create ZMQ context
         context_ = std::make_unique<zmq::context_t>(1);
@@ -22,7 +25,7 @@ bool AODServer::initialize() {
         socket_ = std::make_unique<zmq::socket_t>(*context_, zmq::socket_type::rep);
 
         // Build bind address
-        std::string bind_addr = config_.bind_address + ":" + std::to_string(config_.port);
+        std::string bind_addr = std::string(SERVER_BIND_ADDRESS) + ":" + std::to_string(SERVER_PORT);
 
         // Bind socket
         socket_->bind(bind_addr);

@@ -1,0 +1,79 @@
+# =============================================================================
+# AOD Dynamic Server - Configuration
+# =============================================================================
+# Copy this file to config.cmake and customize for your setup
+#
+# IMPORTANT: Changes to this file require recompilation
+#   rm -rf build && mkdir build && cd build && cmake .. && make
+#
+# config.cmake is in .gitignore - your local settings won't be committed
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Server Configuration
+# -----------------------------------------------------------------------------
+
+# ZMQ server port
+set(SERVER_PORT 5555 CACHE STRING "ZMQ REQ-REP server port")
+
+# Bind address (* = all interfaces, or specify IP)
+set(SERVER_BIND_ADDRESS "tcp://*" CACHE STRING "ZMQ bind address")
+
+# -----------------------------------------------------------------------------
+# AWG Hardware Configuration
+# -----------------------------------------------------------------------------
+
+# Serial number of Spectrum AWG card for identification
+# Set to 0 to auto-connect to first available generator card
+# NOTE: Server scans /dev/spcm0-15 and matches by serial number
+set(AWG_SERIAL_NUMBER 0 CACHE STRING "AWG card serial number")
+
+# Number of output channels (1-4 typical)
+set(AWG_NUM_CHANNELS 4 CACHE STRING "Number of AWG output channels")
+
+# Sample rate in samples per second
+set(AWG_SAMPLE_RATE 200000000 CACHE STRING "AWG sample rate (Hz)")
+
+# Maximum output amplitude in Volts
+set(AWG_MAX_AMPLITUDE 0.18 CACHE STRING "Maximum output amplitude (V)")
+
+# External reference clock configuration
+set(AWG_EXTERNAL_CLOCK_ENABLED FALSE CACHE BOOL "Use external reference clock")
+set(AWG_EXTERNAL_CLOCK_FREQ 10000000 CACHE STRING "External clock frequency (Hz)")
+
+# -----------------------------------------------------------------------------
+# Waveform Generation Parameters
+# -----------------------------------------------------------------------------
+
+# Maximum number of simultaneous tones per channel
+# This affects array sizes in GPU kernels - larger = more memory
+set(AOD_MAX_TONES 128 CACHE STRING "Maximum simultaneous tones per channel")
+
+# Waveform buffer sizes
+set(AOD_DMA_BUFFER_SIZE 67108864 CACHE STRING "DMA buffer size in bytes (64 MB default)")
+set(AOD_NOTIFY_SIZE 1048576 CACHE STRING "Notification chunk size in bytes (1 MB default)")
+set(AOD_HW_BUFFER_SIZE 1073741824 CACHE STRING "Hardware buffer size in bytes (1 GB default)")
+
+# -----------------------------------------------------------------------------
+# GPU/CUDA Configuration
+# -----------------------------------------------------------------------------
+
+# CUDA device ID to use (0 = first GPU)
+set(GPU_DEVICE_ID 0 CACHE STRING "CUDA device index")
+
+# Enable GPU acceleration for waveform generation
+set(GPU_ENABLED TRUE CACHE BOOL "Enable GPU-accelerated waveform generation")
+
+# GPU kernel parameters (tune for your GPU)
+set(GPU_BLOCK_SIZE 256 CACHE STRING "CUDA block size for kernels")
+set(GPU_GRID_SIZE 128 CACHE STRING "CUDA grid size for kernels")
+
+# -----------------------------------------------------------------------------
+# Logging Configuration
+# -----------------------------------------------------------------------------
+
+# Log level: DEBUG, INFO, WARNING, ERROR
+set(LOG_LEVEL "INFO" CACHE STRING "Logging level")
+
+# Log file path (empty = console only)
+set(LOG_FILE "" CACHE STRING "Log file path (empty for console only)")

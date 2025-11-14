@@ -2,7 +2,6 @@
 set(SERVER_SOURCES
     main.cpp
     server.cpp
-    config.cpp
     awg_interface.cpp
 )
 
@@ -14,7 +13,6 @@ target_link_libraries(aod-server
     aod_proto
     ${Protobuf_LIBRARIES}
     ${ZMQ_LIBRARIES}
-    yaml-cpp
     pthread
 )
 

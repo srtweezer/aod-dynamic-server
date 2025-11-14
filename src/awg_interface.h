@@ -1,7 +1,7 @@
 #ifndef AOD_AWG_INTERFACE_H
 #define AOD_AWG_INTERFACE_H
 
-#include "config.h"
+#include <config.h>
 #include <string>
 
 #include <spectrum/dlltyp.h>
@@ -12,10 +12,9 @@
 namespace aod {
 
 // Interface to Spectrum Instrumentation AWG hardware
-// Currently a placeholder - will be implemented with SDK integration
 class AWGInterface {
 public:
-    AWGInterface(const AWGConfig& config);
+    AWGInterface();
     ~AWGInterface();
 
     // Connect to AWG hardware
@@ -27,16 +26,12 @@ public:
     // Check if connected
     bool isConnected() const { return connected_; }
 
-    // Get configuration
-    const AWGConfig& config() const { return config_; }
-
     // Placeholder for future waveform streaming methods
     // bool startStream();
     // bool writeBuffer(const float* data, size_t length);
     // bool stopStream();
 
 private:
-    AWGConfig config_;
     bool connected_;
     drv_handle card_handle_;
 };

@@ -1,10 +1,11 @@
 #include "awg_interface.h"
+#include <config.h>
 #include <iostream>
 
 namespace aod {
 
-AWGInterface::AWGInterface(const AWGConfig& config)
-    : config_(config), connected_(false), card_handle_(nullptr) {
+AWGInterface::AWGInterface()
+    : connected_(false), card_handle_(nullptr) {
 }
 
 AWGInterface::~AWGInterface() {
@@ -12,11 +13,13 @@ AWGInterface::~AWGInterface() {
 }
 
 bool AWGInterface::connect() {
+    using namespace aod::config;
+
     std::cout << "[AWG] Scanning for Spectrum AWG devices..." << std::endl;
-    std::cout << "[AWG]   Target serial number: " << config_.serial_number << std::endl;
-    std::cout << "[AWG]   Sample rate: " << config_.sample_rate << " S/s" << std::endl;
-    std::cout << "[AWG]   Channels: " << config_.num_channels << std::endl;
-    std::cout << "[AWG]   Max amplitude: " << config_.max_amplitude << " V" << std::endl;
+    std::cout << "[AWG]   Target serial number: " << AWG_SERIAL_NUMBER << std::endl;
+    std::cout << "[AWG]   Sample rate: " << AWG_SAMPLE_RATE << " S/s" << std::endl;
+    std::cout << "[AWG]   Channels: " << AWG_NUM_CHANNELS << std::endl;
+    std::cout << "[AWG]   Max amplitude: " << AWG_MAX_AMPLITUDE << " V" << std::endl;
 
     // Scan for devices /dev/spcm0 through /dev/spcm15
     const int MAX_CARDS = 16;
@@ -53,7 +56,7 @@ bool AWGInterface::connect() {
         }
 
         // Check serial number match
-        if (config_.serial_number != 0 && lSerialNumber != config_.serial_number) {
+        if (AWG_SERIAL_NUMBER != 0 && lSerialNumber != AWG_SERIAL_NUMBER) {
             std::cout << " (serial mismatch, skipping)" << std::endl;
             spcm_vClose(hCard);
             continue;
@@ -70,9 +73,9 @@ bool AWGInterface::connect() {
     }
 
     if (!found) {
-        if (config_.serial_number != 0) {
+        if (AWG_SERIAL_NUMBER != 0) {
             std::cerr << "[AWG] Error: No generator card found with serial number "
-                      << config_.serial_number << std::endl;
+                      << AWG_SERIAL_NUMBER << std::endl;
         } else {
             std::cerr << "[AWG] Error: No generator cards found" << std::endl;
         }

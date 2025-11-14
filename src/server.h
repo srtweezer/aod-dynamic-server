@@ -1,7 +1,7 @@
 #ifndef AOD_SERVER_H
 #define AOD_SERVER_H
 
-#include "config.h"
+#include <config.h>
 #include "aod_server.pb.h"
 #include <zmq.hpp>
 #include <memory>
@@ -14,7 +14,7 @@ class AWGInterface;
 
 class AODServer {
 public:
-    AODServer(const ServerConfig& config, std::shared_ptr<AWGInterface> awg);
+    AODServer(std::shared_ptr<AWGInterface> awg);
     ~AODServer();
 
     // Initialize the server (create socket, bind)
@@ -35,9 +35,6 @@ private:
 
     // Command handlers
     Response handlePing(const PingRequest& request);
-
-    // Configuration
-    ServerConfig config_;
 
     // ZMQ context and socket
     std::unique_ptr<zmq::context_t> context_;

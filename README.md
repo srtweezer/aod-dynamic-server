@@ -18,11 +18,10 @@ This server enables precise control of individual atoms trapped in optical tweez
 
 - **CMake** >= 3.20
 - **C++17** compiler (g++, clang++)
-- **CUDA Toolkit** >= 11.0
+- **CUDA Toolkit** >= 11.0 (optional, for GPU acceleration)
 - **Protocol Buffers** >= 3.0
 - **ZeroMQ** (libzmq)
-- **yaml-cpp**
-- **Spectrum Instrumentation SDK** (optional, for AWG integration)
+- **Spectrum Instrumentation SDK** (required, for AWG hardware)
 
 ### Installing Dependencies (Ubuntu/Debian)
 
@@ -33,11 +32,12 @@ sudo apt-get install -y \
     g++ \
     libzmq3-dev \
     libprotobuf-dev \
-    protobuf-compiler \
-    libyaml-cpp-dev
+    protobuf-compiler
 ```
 
-For CUDA, follow the [NVIDIA CUDA installation guide](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/).
+For CUDA (optional), follow the [NVIDIA CUDA installation guide](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/).
+
+For Spectrum Instrumentation SDK, install from [Spectrum's website](https://www.spectrum-instrumentation.com/en/downloads).
 
 ## Building
 
@@ -52,10 +52,15 @@ cd /path/to/aod-dynamic-server
 Copy the configuration template and customize it:
 
 ```bash
-cp config.yml.template config.yml
+cp config.cmake.template config.cmake
 ```
 
-Edit `config.yml` with your hardware parameters (port, AWG settings, etc.).
+Edit `config.cmake` with your hardware parameters:
+- `AWG_SERIAL_NUMBER`: Your AWG card serial number (or 0 for auto-detect)
+- `SERVER_PORT`: ZMQ server port
+- `AWG_SAMPLE_RATE`, `AWG_NUM_CHANNELS`, etc.
+
+**IMPORTANT**: All parameters in `config.cmake` are **compile-time constants**. Changes require rebuilding the project.
 
 ### 3. Build the project
 
@@ -68,6 +73,17 @@ make -j$(nproc)
 
 The executable `aod-server` will be created in the `build/` directory.
 
+### 4. Rebuilding after configuration changes
+
+If you modify `config.cmake`:
+
+```bash
+cd build
+rm -rf *
+cmake ..
+make -j$(nproc)
+```
+
 ## Running the Server
 
 ### Start the server
@@ -77,10 +93,10 @@ The executable `aod-server` will be created in the `build/` directory.
 ```
 
 The server will:
-1. Load configuration from `config.yml`
-2. Validate parameters
-3. Initialize AWG interface (placeholder)
-4. Start ZMQ server on configured port (default: 5555)
+1. Display compiled configuration
+2. Scan for Spectrum AWG devices (/dev/spcm0-15)
+3. Connect to AWG matching the configured serial number
+4. Start ZMQ server on configured port
 
 ### Command-line options
 
@@ -89,8 +105,9 @@ The server will:
 ```
 
 Options:
-- `--config PATH`: Specify configuration file (default: `config.yml`)
 - `--help`: Show help message
+
+**Note**: Configuration is compiled in from `config.cmake`. There are no runtime configuration files.
 
 ### Stop the server
 
@@ -98,12 +115,21 @@ Press `Ctrl+C` to gracefully shut down the server.
 
 ## Configuration
 
-See `config.yml.template` for all available configuration options:
+All configuration is done via `config.cmake` at **compile-time**. This approach:
+- ✅ Allows array sizes and constants to be known at compile time
+- ✅ Enables compiler optimizations
+- ✅ Perfect for GPU kernel parameters and buffer sizes
+- ✅ No runtime config file parsing overhead
 
-- **server**: Port and bind address
-- **awg**: AWG device parameters
-- **logging**: Log level and output
-- **gpu**: CUDA device selection
+See `config.cmake.template` for all available options:
+
+- **Server**: Port, bind address
+- **AWG**: Serial number, channels, sample rate, amplitude limits
+- **Waveform**: Max tones, buffer sizes
+- **GPU**: Device selection, kernel parameters
+- **Logging**: Level and output file
+
+To change any setting, edit `config.cmake` and rebuild.
 
 ## Testing the Server
 
@@ -136,18 +162,21 @@ print(f"Server timestamp: {response.ping.timestamp_ns}")
 ```
 aod-dynamic-server/
 ├── CMakeLists.txt              # Root build configuration
-├── config.yml.template         # Configuration template
+├── config.cmake.template       # Configuration template (committed)
+├── config.cmake                # Your configuration (not committed)
 ├── proto/                      # Protocol Buffer definitions
 │   ├── aod_server.proto
 │   └── CMakeLists.txt
 ├── src/                        # Source code
+│   ├── config.h.in             # Configuration header template
 │   ├── main.cpp                # Entry point
 │   ├── server.{h,cpp}          # ZMQ server
-│   ├── config.{h,cpp}          # Configuration loader
 │   ├── awg_interface.{h,cpp}   # AWG interface
 │   └── cuda/                   # CUDA kernels (future)
-├── old/                        # Reference implementations
-├── docs/                       # Documentation
+├── external/                   # External dependencies
+│   └── spectrum/               # Spectrum SDK headers
+├── build/                      # Build directory (not committed)
+│   └── config.h                # Generated configuration
 ├── CLAUDE.md                   # Development notes
 └── API.md                      # API documentation
 ```
@@ -172,15 +201,24 @@ Place CUDA kernel files in `src/cuda/` and update `src/CMakeLists.txt`.
 
 ### "Configuration file not found"
 
-Make sure you've created `config.yml` from the template:
+Make sure you've created `config.cmake` from the template:
 ```bash
-cp config.yml.template config.yml
+cp config.cmake.template config.cmake
 ```
+
+### AWG Device Not Found
+
+The server scans `/dev/spcm0` through `/dev/spcm15` for Spectrum cards.
+
+- Check device permissions: `ls -l /dev/spcm*`
+- Verify card is detected: `lspci | grep Spectrum`
+- Check serial number in `config.cmake` matches your hardware
+- Set `AWG_SERIAL_NUMBER = 0` to connect to first available generator card
 
 ### ZMQ binding errors
 
 - Check if the port is already in use: `netstat -tulpn | grep 5555`
-- Try changing the port in `config.yml`
+- Change `SERVER_PORT` in `config.cmake` and rebuild
 
 ### CUDA errors
 
