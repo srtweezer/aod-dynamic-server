@@ -3,6 +3,7 @@
 
 #include <config.h>
 #include <string>
+#include <vector>
 #include <thread>
 #include <atomic>
 #include <memory>
@@ -19,11 +20,39 @@ namespace aod {
 // Forward declarations
 template<typename T> class ThreadSafeQueue;
 
-// Waveform command structure (placeholder for now)
+// Command result structure
+struct CommandResult {
+    bool success;
+    std::string error_message;
+};
+
+// AWG command types
+enum class AWGCommandType {
+    INITIALIZE,
+    START,
+    STOP,
+    // Future: GENERATE_WAVEFORM, etc.
+};
+
+// Waveform command structure
 struct WaveformCommand {
-    // TODO: Define actual waveform parameters
-    // For now, just a placeholder
-    int command_id;
+    AWGCommandType type;
+
+    // Command-specific data
+    struct InitializeData {
+        std::vector<int32> amplitudes_mv;  // mV for each active channel
+    };
+
+    // Union of command data (for now just Initialize)
+    std::shared_ptr<InitializeData> initialize_data;
+};
+
+// AWG state
+enum class AWGState {
+    DISCONNECTED,  // No hardware connection
+    CONNECTED,     // Connected but not initialized
+    INITIALIZED,   // Configured and ready
+    STREAMING      // Actively outputting waveforms
 };
 
 // Interface to Spectrum Instrumentation AWG hardware
@@ -42,36 +71,65 @@ public:
     // Check if running
     bool isRunning() const { return running_; }
 
+    // Get current state
+    AWGState getState() const { return state_; }
+
     // Queue a waveform command for execution
     void queueCommand(const WaveformCommand& cmd);
+
+    // Queue command and wait for completion (blocks until done or timeout)
+    CommandResult queueCommandAndWait(const WaveformCommand& cmd, int timeout_ms = 1000);
 
 private:
     // Thread entry point
     void threadLoop();
 
-    // Initialize AWG hardware (called from thread)
+    // Connect to AWG hardware (called from thread)
     bool connectHardware();
 
     // Disconnect AWG hardware (called from thread)
     void disconnectHardware();
 
-    // Process commands from queue (placeholder)
+    // Initialize AWG for FIFO streaming (called from thread)
+    bool initializeAWG(const std::vector<int32>& amplitudes_mv);
+
+    // Stop AWG output and DMA (called from thread)
+    bool stopAWG();
+
+    // Zero the software buffer
+    void zeroBuffer();
+
+    // Process commands from queue
     void processCommand(const WaveformCommand& cmd);
 
     // Thread and synchronization
     std::unique_ptr<std::thread> thread_;
     std::atomic<bool> running_;
     std::atomic<bool> shutdown_requested_;
+
+    // Initialization synchronization
     std::mutex init_mutex_;
     std::condition_variable init_cv_;
     bool init_complete_;
 
+    // Command result synchronization
+    std::mutex result_mutex_;
+    std::condition_variable result_cv_;
+    CommandResult last_result_;
+    bool result_ready_;
+
     // Command queue
     std::unique_ptr<ThreadSafeQueue<WaveformCommand>> command_queue_;
 
-    // AWG hardware
+    // AWG hardware and state
     std::atomic<bool> connected_;
+    std::atomic<AWGState> state_;
     drv_handle card_handle_;
+
+    // FIFO buffers
+    void* sw_buffer_;
+    size_t sw_buffer_size_;
+    size_t notify_size_;
 };
 
 } // namespace aod

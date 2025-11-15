@@ -18,6 +18,39 @@ message PingResponse {
 }
 
 // ============================================================================
+// Initialize Command
+// ============================================================================
+
+// Initialize AWG hardware with channel amplitudes
+message InitializeRequest {
+  // Amplitude for each active channel in millivolts
+  // Array size must match number of active channels in AWG_CHANNEL_MASK
+  // Example: if mask = 0b0011 (channels 0,1), provide 2 amplitudes
+  repeated int32 channel_amplitudes_mv = 1;
+}
+
+// Response from initialize command
+message InitializeResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+// ============================================================================
+// Stop Command
+// ============================================================================
+
+// Stop AWG output and DMA
+message StopRequest {
+  // Empty - no parameters required
+}
+
+// Response from stop command
+message StopResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+// ============================================================================
 // Top-Level Request/Response Wrappers
 // ============================================================================
 
@@ -25,9 +58,11 @@ message PingResponse {
 message Request {
   oneof command {
     PingRequest ping = 1;
+    InitializeRequest initialize = 2;
+    StopRequest stop = 3;
     // Future commands will be added here:
-    // GenerateWaveformRequest generate_waveform = 2;
-    // StopRequest stop = 3;
+    // GenerateWaveformRequest generate_waveform = 4;
+    // StartRequest start = 5;
     // etc.
   }
 }
@@ -36,9 +71,11 @@ message Request {
 message Response {
   oneof result {
     PingResponse ping = 1;
+    InitializeResponse initialize = 2;
+    StopResponse stop = 3;
     // Future responses will be added here:
-    // GenerateWaveformResponse generate_waveform = 2;
-    // ErrorResponse error = 3;
+    // GenerateWaveformResponse generate_waveform = 4;
+    // ErrorResponse error = 5;
     // etc.
   }
 }

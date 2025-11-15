@@ -35,6 +35,8 @@ private:
 
     // Command handlers
     Response handlePing(const PingRequest& request);
+    Response handleInitialize(const InitializeRequest& request);
+    Response handleStop(const StopRequest& request);
 
     // ZMQ context and socket
     std::unique_ptr<zmq::context_t> context_;

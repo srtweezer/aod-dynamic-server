@@ -110,6 +110,14 @@ Response AODServer::handleRequest(const Request& request) {
             response = handlePing(request.ping());
             break;
 
+        case Request::kInitialize:
+            response = handleInitialize(request.initialize());
+            break;
+
+        case Request::kStop:
+            response = handleStop(request.stop());
+            break;
+
         case Request::COMMAND_NOT_SET:
             std::cerr << "[Server] Received request with no command set" << std::endl;
             break;
@@ -134,6 +142,71 @@ Response AODServer::handlePing(const PingRequest& request) {
     ping_response->set_timestamp_ns(nanoseconds);
 
     std::cout << "[Server] Ping received, responding with timestamp: " << nanoseconds << std::endl;
+
+    return response;
+}
+
+Response AODServer::handleInitialize(const InitializeRequest& request) {
+    std::cout << "[Server] Initialize command received" << std::endl;
+
+    // Extract amplitudes
+    std::vector<int32> amplitudes_mv;
+    for (int i = 0; i < request.channel_amplitudes_mv_size(); i++) {
+        amplitudes_mv.push_back(request.channel_amplitudes_mv(i));
+    }
+
+    std::cout << "[Server] Amplitudes (mV): [";
+    for (size_t i = 0; i < amplitudes_mv.size(); i++) {
+        std::cout << amplitudes_mv[i];
+        if (i < amplitudes_mv.size() - 1) std::cout << ", ";
+    }
+    std::cout << "]" << std::endl;
+
+    // Create command for AWG thread
+    WaveformCommand cmd;
+    cmd.type = AWGCommandType::INITIALIZE;
+    cmd.initialize_data = std::make_shared<WaveformCommand::InitializeData>();
+    cmd.initialize_data->amplitudes_mv = amplitudes_mv;
+
+    // Queue command and wait for completion (1 second timeout)
+    CommandResult result = awg_->queueCommandAndWait(cmd, 1000);
+
+    // Create response
+    Response response;
+    InitializeResponse* init_response = response.mutable_initialize();
+    init_response->set_success(result.success);
+    init_response->set_error_message(result.error_message);
+
+    if (result.success) {
+        std::cout << "[Server] Initialize completed successfully" << std::endl;
+    } else {
+        std::cout << "[Server] Initialize failed: " << result.error_message << std::endl;
+    }
+
+    return response;
+}
+
+Response AODServer::handleStop(const StopRequest& request) {
+    std::cout << "[Server] Stop command received" << std::endl;
+
+    // Create command for AWG thread
+    WaveformCommand cmd;
+    cmd.type = AWGCommandType::STOP;
+
+    // Queue command and wait for completion (1 second timeout)
+    CommandResult result = awg_->queueCommandAndWait(cmd, 1000);
+
+    // Create response
+    Response response;
+    StopResponse* stop_response = response.mutable_stop();
+    stop_response->set_success(result.success);
+    stop_response->set_error_message(result.error_message);
+
+    if (result.success) {
+        std::cout << "[Server] Stop completed successfully" << std::endl;
+    } else {
+        std::cout << "[Server] Stop failed: " << result.error_message << std::endl;
+    }
 
     return response;
 }

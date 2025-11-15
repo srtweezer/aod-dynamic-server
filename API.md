@@ -6,7 +6,8 @@ This document describes the Protocol Buffer API for communicating with the AOD D
 
 - **Transport**: ZeroMQ REQ-REP pattern
 - **Serialization**: Protocol Buffers (proto3)
-- **Default Port**: 5555 (configurable in `config.yml`)
+- **Default Port**: Configured at compile-time in `config.cmake` (default: 5555)
+- **Response Time**: Commands are synchronous with 1-second timeout
 
 ## Message Structure
 
@@ -18,7 +19,8 @@ All communication uses two top-level messages:
 message Request {
   oneof command {
     PingRequest ping = 1;
-    // Future commands...
+    InitializeRequest initialize = 2;
+    StopRequest stop = 3;
   }
 }
 ```
@@ -29,7 +31,8 @@ message Request {
 message Response {
   oneof result {
     PingResponse ping = 1;
-    // Future responses...
+    InitializeResponse initialize = 2;
+    StopResponse stop = 3;
   }
 }
 ```
@@ -84,6 +87,143 @@ timestamp_ns = response.ping.timestamp_ns
 print(f"Server timestamp: {timestamp_ns} ns")
 ```
 
+---
+
+### Initialize
+
+Configure AWG hardware with channel amplitudes and prepare for waveform generation.
+
+#### Request
+
+```protobuf
+message InitializeRequest {
+  repeated int32 channel_amplitudes_mv = 1;  // Amplitude in mV for each active channel
+}
+```
+
+**Parameters:**
+- `channel_amplitudes_mv`: Array of amplitudes in millivolts
+  - Size must match the number of active channels in `AWG_CHANNEL_MASK` (compile-time config)
+  - Example: If `AWG_CHANNEL_MASK = 0b0011` (2 channels), provide 2 amplitudes
+  - Values are applied in channel order (e.g., [amp_ch0, amp_ch1])
+
+#### Response
+
+```protobuf
+message InitializeResponse {
+  bool success = 1;
+  string error_message = 2;  // Empty if success=true, detailed error otherwise
+}
+```
+
+#### What It Does
+
+1. Sets AWG mode to FIFO single replay (`SPC_REP_FIFO_SINGLE`)
+2. Enables channels based on compile-time `AWG_CHANNEL_MASK`
+3. Configures each active channel:
+   - Sets amplitude (in mV)
+   - Sets filter to 0 (no filter)
+   - Enables output
+4. Configures clock (internal PLL) and sample rate
+5. Sets software trigger
+6. Allocates and zeros 64 MB DMA buffer
+7. Defines DMA transfer with notify size
+
+**State Transition:** CONNECTED → INITIALIZED
+
+**Re-initialization:** If already initialized, updates amplitudes and zeros buffer without reallocating.
+
+#### Example Usage (Python)
+
+```python
+import zmq
+import aod_server_pb2
+
+context = zmq.Context()
+socket = context.socket(zmq.REQ)
+socket.connect("tcp://localhost:8037")
+
+# Initialize with 4 channel amplitudes (for mask 0b1111)
+request = aod_server_pb2.Request()
+init_req = request.initialize
+init_req.channel_amplitudes_mv.extend([500, 800, 1000, 750])  # mV
+
+socket.send(request.SerializeToString())
+response_data = socket.recv()
+
+response = aod_server_pb2.Response()
+response.ParseFromString(response_data)
+
+if response.initialize.success:
+    print("AWG initialized successfully")
+else:
+    print(f"Error: {response.initialize.error_message}")
+```
+
+#### Common Errors
+
+- **"Expected N amplitudes, got M"**: Amplitude count doesn't match active channels
+- **"AWG setup failed: ..."**: Spectrum SDK configuration error (check hardware)
+- **"Failed to allocate buffer"**: Insufficient memory for DMA buffer
+- **"Command timed out"**: Initialization took longer than 1 second
+
+---
+
+### Stop
+
+Stop AWG output, halt DMA transfer, and zero the software buffer.
+
+#### Request
+
+```protobuf
+message StopRequest {
+  // Empty - no parameters required
+}
+```
+
+#### Response
+
+```protobuf
+message StopResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+```
+
+#### What It Does
+
+1. Stops card output (`M2CMD_CARD_STOP`)
+2. Stops DMA transfer (`M2CMD_DATA_STOPDMA`)
+3. Zeros the software buffer
+4. **Does NOT de-initialize** - AWG stays in INITIALIZED state
+
+**Note:** If AWG is not running (CONNECTED state), Stop is a no-op and returns success. This makes Stop idempotent and safe to call multiple times.
+
+#### Example Usage (Python)
+
+```python
+# Send Stop command
+request = aod_server_pb2.Request()
+request.stop.CopyFrom(aod_server_pb2.StopRequest())
+
+socket.send(request.SerializeToString())
+response_data = socket.recv()
+
+response = aod_server_pb2.Response()
+response.ParseFromString(response_data)
+
+if response.stop.success:
+    print("AWG stopped successfully")
+else:
+    print(f"Error: {response.stop.error_message}")
+```
+
+#### Common Errors
+
+- **"Failed to stop AWG: ..."**: Spectrum SDK error during stop (rare)
+
+---
+
 ## Future Commands (Planned)
 
 The following commands are planned for future implementation:
@@ -106,17 +246,18 @@ message GenerateWaveformResponse {
 }
 ```
 
-### Stop/Abort
+### Start
 
-Stop ongoing waveform generation.
+Start AWG output and begin FIFO streaming.
 
 ```protobuf
-message StopRequest {
-  // Empty or abort reason
+message StartRequest {
+  // To be defined
 }
 
-message StopResponse {
+message StartResponse {
   bool success = 1;
+  string error_message = 2;
 }
 ```
 
@@ -137,24 +278,53 @@ message GetStatusResponse {
 }
 ```
 
+## AWG State Machine
+
+The AWG follows this state machine:
+
+```
+DISCONNECTED → CONNECTED → INITIALIZED → STREAMING
+       ↑            ↑            ↓
+       └────────────┴───────── STOP
+```
+
+**States:**
+- **DISCONNECTED**: No hardware connection
+- **CONNECTED**: Hardware connected, not configured
+- **INITIALIZED**: Configured with buffers allocated, ready to stream
+- **STREAMING**: Actively outputting waveforms (future)
+
+**Transitions:**
+- `start()` (server startup): DISCONNECTED → CONNECTED
+- `Initialize`: CONNECTED → INITIALIZED (or INITIALIZED → INITIALIZED on re-init)
+- `Stop`: Stops output but keeps INITIALIZED state (idempotent)
+- `Start` (future): INITIALIZED → STREAMING
+- `disconnectHardware()`: Any → DISCONNECTED
+
 ## Error Handling
 
-Currently, errors are logged to the server console. Future versions will include:
+All commands return synchronous responses with detailed error messages.
 
+**Response Pattern:**
 ```protobuf
-message ErrorResponse {
-  int32 error_code = 1;
-  string error_message = 2;
-  string stack_trace = 3;  // Optional, for debugging
+message SomeResponse {
+  bool success = 1;
+  string error_message = 2;  // Populated on failure
 }
 ```
 
-Common error codes (planned):
-- `1`: Invalid request format
-- `2`: AWG not connected
-- `3`: GPU error
-- `4`: Configuration error
-- `5`: Buffer underrun
+**Error Sources:**
+- **Validation errors**: Invalid parameters (e.g., wrong amplitude count)
+- **Spectrum SDK errors**: Hardware configuration failures (includes SDK error text)
+- **State errors**: Command called in wrong state (e.g., Stop when not initialized)
+- **Timeout errors**: Command took longer than 1 second to complete
+- **Allocation errors**: Failed to allocate buffers
+
+**Example Error Messages:**
+- `"Expected 4 amplitudes for active channels, got 2"`
+- `"AWG setup failed: Call: (SPC_CARDMODE, ...) -> invalid mode"`
+- `"AWG not initialized or streaming (current state: 1)"`
+- `"Command timed out after 1000ms"`
 
 ## Client Libraries
 
