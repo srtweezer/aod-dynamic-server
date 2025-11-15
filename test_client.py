@@ -19,7 +19,7 @@ except ImportError:
     print("  cd proto && protoc --python_out=../build/proto aod_server.proto")
     sys.exit(1)
 
-def test_ping(host="localhost", port=5555):
+def test_ping(host="localhost", port=8037):
     """Test the ping command"""
     print(f"Connecting to AOD server at {host}:{port}...")
 

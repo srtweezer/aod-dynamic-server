@@ -3,6 +3,11 @@
 
 #include <config.h>
 #include <string>
+#include <thread>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <condition_variable>
 
 #include <spectrum/dlltyp.h>
 #include <spectrum/regs.h>
@@ -11,28 +16,61 @@
 
 namespace aod {
 
+// Forward declarations
+template<typename T> class ThreadSafeQueue;
+
+// Waveform command structure (placeholder for now)
+struct WaveformCommand {
+    // TODO: Define actual waveform parameters
+    // For now, just a placeholder
+    int command_id;
+};
+
 // Interface to Spectrum Instrumentation AWG hardware
+// Runs in a dedicated thread for FIFO streaming
 class AWGInterface {
 public:
     AWGInterface();
     ~AWGInterface();
 
-    // Connect to AWG hardware
-    bool connect();
+    // Start AWG thread (connects to hardware and starts thread)
+    bool start();
 
-    // Disconnect from AWG hardware
-    void disconnect();
+    // Stop AWG thread (disconnects and joins thread)
+    void stop();
 
-    // Check if connected
-    bool isConnected() const { return connected_; }
+    // Check if running
+    bool isRunning() const { return running_; }
 
-    // Placeholder for future waveform streaming methods
-    // bool startStream();
-    // bool writeBuffer(const float* data, size_t length);
-    // bool stopStream();
+    // Queue a waveform command for execution
+    void queueCommand(const WaveformCommand& cmd);
 
 private:
-    bool connected_;
+    // Thread entry point
+    void threadLoop();
+
+    // Initialize AWG hardware (called from thread)
+    bool connectHardware();
+
+    // Disconnect AWG hardware (called from thread)
+    void disconnectHardware();
+
+    // Process commands from queue (placeholder)
+    void processCommand(const WaveformCommand& cmd);
+
+    // Thread and synchronization
+    std::unique_ptr<std::thread> thread_;
+    std::atomic<bool> running_;
+    std::atomic<bool> shutdown_requested_;
+    std::mutex init_mutex_;
+    std::condition_variable init_cv_;
+    bool init_complete_;
+
+    // Command queue
+    std::unique_ptr<ThreadSafeQueue<WaveformCommand>> command_queue_;
+
+    // AWG hardware
+    std::atomic<bool> connected_;
     drv_handle card_handle_;
 };
 

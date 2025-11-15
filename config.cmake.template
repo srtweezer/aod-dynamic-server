@@ -28,8 +28,13 @@ set(SERVER_BIND_ADDRESS "tcp://*" CACHE STRING "ZMQ bind address")
 # NOTE: Server scans /dev/spcm0-15 and matches by serial number
 set(AWG_SERIAL_NUMBER 0 CACHE STRING "AWG card serial number")
 
-# Number of output channels (1-4 typical)
-set(AWG_NUM_CHANNELS 4 CACHE STRING "Number of AWG output channels")
+# Active channel mask (bitwise: bit 0 = CH0, bit 1 = CH1, etc.)
+# Examples:
+#   0b0001 = Channel 0 only
+#   0b0011 = Channels 0 and 1
+#   0b1111 = All 4 channels
+# You can also use decimal (15 = 0b1111) or hex (0xF = 0b1111)
+set(AWG_CHANNEL_MASK 0b1111 CACHE STRING "Active channel bitmask")
 
 # Sample rate in samples per second
 set(AWG_SAMPLE_RATE 200000000 CACHE STRING "AWG sample rate (Hz)")

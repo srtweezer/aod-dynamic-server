@@ -26,7 +26,7 @@ constexpr const char* SERVER_BIND_ADDRESS = "@SERVER_BIND_ADDRESS@";
 // -----------------------------------------------------------------------------
 
 constexpr int AWG_SERIAL_NUMBER = @AWG_SERIAL_NUMBER@;
-constexpr int AWG_NUM_CHANNELS = @AWG_NUM_CHANNELS@;
+constexpr int AWG_CHANNEL_MASK = @AWG_CHANNEL_MASK@;
 constexpr int AWG_SAMPLE_RATE = @AWG_SAMPLE_RATE@;
 constexpr double AWG_MAX_AMPLITUDE = @AWG_MAX_AMPLITUDE@;
 

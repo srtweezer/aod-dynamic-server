@@ -5,6 +5,7 @@
 #include <csignal>
 #include <memory>
 #include <string>
+#include <bitset>
 
 // Global server pointer for signal handler
 std::unique_ptr<aod::AODServer> g_server;
@@ -45,13 +46,13 @@ int main(int argc, char** argv) {
     std::cout << "[Main] Configuration (compiled):" << std::endl;
     std::cout << "[Main]   Server port: " << SERVER_PORT << std::endl;
     std::cout << "[Main]   AWG serial: " << AWG_SERIAL_NUMBER << std::endl;
-    std::cout << "[Main]   AWG channels: " << AWG_NUM_CHANNELS << std::endl;
+    std::cout << "[Main]   AWG channel mask: 0b" << std::bitset<4>(AWG_CHANNEL_MASK) << std::endl;
     std::cout << "[Main]   Sample rate: " << AWG_SAMPLE_RATE << " Hz" << std::endl;
 
-    // Initialize AWG interface
+    // Initialize and start AWG interface thread
     auto awg = std::make_shared<aod::AWGInterface>();
-    if (!awg->connect()) {
-        std::cerr << "Error: Failed to connect to AWG" << std::endl;
+    if (!awg->start()) {
+        std::cerr << "Error: Failed to start AWG thread" << std::endl;
         return 1;
     }
 
@@ -76,8 +77,8 @@ int main(int argc, char** argv) {
 
     // Cleanup
     std::cout << "[Main] Shutting down..." << std::endl;
-    awg->disconnect();
     g_server.reset();
+    awg->stop();
 
     std::cout << "[Main] Server stopped" << std::endl;
     return 0;
