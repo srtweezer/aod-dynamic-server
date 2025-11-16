@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Workaround for CUDA 12.8 with GCC 13 compatibility issues
+# Use GCC-12 as CUDA host compiler
+set(CMAKE_CUDA_HOST_COMPILER /usr/bin/gcc-12)
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --allow-unsupported-compiler")
+
 # Load user configuration
 if(EXISTS ${CMAKE_SOURCE_DIR}/config.cmake)
     include(${CMAKE_SOURCE_DIR}/config.cmake)
@@ -11,21 +16,15 @@ else()
         "Then edit config.cmake with your hardware parameters.")
 endif()
 
-# Start with C++ only - CUDA will be enabled when needed
-project(aod-dynamic-server LANGUAGES CXX)
+# Enable C++ and CUDA (CUDA is required for GPU waveform generation)
+project(aod-dynamic-server LANGUAGES CXX CUDA)
 
-# Optionally enable CUDA if available
-option(ENABLE_CUDA "Enable CUDA support" OFF)
+# Set CUDA standard and architecture
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_ARCHITECTURES 86)
 
-if(ENABLE_CUDA)
-    enable_language(CUDA)
-    set(CMAKE_CUDA_STANDARD 17)
-    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    set(CMAKE_CUDA_ARCHITECTURES 86)
-    message(STATUS "CUDA support enabled")
-else()
-    message(STATUS "CUDA support disabled (use -DENABLE_CUDA=ON to enable)")
-endif()
+message(STATUS "CUDA support enabled (required)")
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
@@ -67,6 +66,9 @@ if(GPU_ENABLED)
 else()
     set(GPU_ENABLED_CPP "false")
 endif()
+
+# Note: Buffer alignment validation skipped in CMake due to binary literal parsing complexity
+# Validation will be done at runtime in C++ code
 
 # Generate configuration header from template
 configure_file(

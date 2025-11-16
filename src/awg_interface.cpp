@@ -221,6 +221,14 @@ bool AWGInterface::connectHardware() {
 
         std::cout << "[AWG] Connected to " << device_path
                   << " (" << szCardName << " SN " << lSerialNumber << ")" << std::endl;
+
+        // Allocate GPU buffers after successful hardware connection
+        if (!allocateGPU()) {
+            std::cerr << "[AWG] Failed to allocate GPU buffers" << std::endl;
+            spcm_vClose(card_handle_);
+            card_handle_ = nullptr;
+            return false;
+        }
     }
 
     if (!found) {
@@ -240,6 +248,9 @@ void AWGInterface::disconnectHardware() {
     if (connected_) {
         std::cout << "[AWG Thread] Disconnecting from AWG..." << std::endl;
 
+        // Free GPU buffers first
+        freeGPU();
+
         if (card_handle_) {
             spcm_vClose(card_handle_);
             card_handle_ = nullptr;
@@ -248,6 +259,15 @@ void AWGInterface::disconnectHardware() {
         connected_ = false;
         std::cout << "[AWG Thread] Disconnected" << std::endl;
     }
+}
+
+bool AWGInterface::allocateGPU() {
+    std::cout << "[AWG] Allocating GPU buffers..." << std::endl;
+    return allocateGPUBuffers(gpu_buffers_);
+}
+
+void AWGInterface::freeGPU() {
+    freeGPUBuffers(gpu_buffers_);
 }
 
 bool AWGInterface::initializeAWG(const std::vector<int32>& amplitudes_mv) {
@@ -388,10 +408,15 @@ bool AWGInterface::stopAWG() {
 }
 
 void AWGInterface::zeroBuffer() {
+    // Zero software DMA buffer
     if (sw_buffer_ && sw_buffer_size_ > 0) {
         std::memset(sw_buffer_, 0, sw_buffer_size_);
-        std::cout << "[AWG Thread] Buffer zeroed" << std::endl;
     }
+
+    // Zero GPU buffers
+    zeroGPUBuffers(gpu_buffers_);
+
+    std::cout << "[AWG Thread] Buffers zeroed (CPU + GPU)" << std::endl;
 }
 
 void AWGInterface::processCommand(const WaveformCommand& cmd) {

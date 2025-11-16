@@ -3,10 +3,17 @@ set(SERVER_SOURCES
     main.cpp
     server.cpp
     awg_interface.cpp
+    cuda/gpu_buffers.cu
 )
 
 # Create executable
 add_executable(aod-server ${SERVER_SOURCES})
+
+# Set CUDA properties
+set_target_properties(aod-server PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+)
 
 # Link libraries
 target_link_libraries(aod-server

@@ -15,6 +15,8 @@
 #include <spectrum/spcerr.h>
 #include <spectrum/spcm_drv.h>
 
+#include "cuda/gpu_buffers.h"
+
 namespace aod {
 
 // Forward declarations
@@ -90,6 +92,12 @@ private:
     // Disconnect AWG hardware (called from thread)
     void disconnectHardware();
 
+    // Allocate GPU buffers
+    bool allocateGPU();
+
+    // Free GPU buffers
+    void freeGPU();
+
     // Initialize AWG for FIFO streaming (called from thread)
     bool initializeAWG(const std::vector<int32>& amplitudes_mv);
 
@@ -130,6 +138,9 @@ private:
     void* sw_buffer_;
     size_t sw_buffer_size_;
     size_t notify_size_;
+
+    // GPU buffers
+    GPUBuffers gpu_buffers_;
 };
 
 } // namespace aod
