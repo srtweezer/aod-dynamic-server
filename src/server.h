@@ -37,6 +37,7 @@ private:
     Response handlePing(const PingRequest& request);
     Response handleInitialize(const InitializeRequest& request);
     Response handleStop(const StopRequest& request);
+    Response handleWaveformBatch(const WaveformBatchRequest& request);
 
     // ZMQ context and socket
     std::unique_ptr<zmq::context_t> context_;

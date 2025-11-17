@@ -38,6 +38,7 @@ constexpr int AWG_EXTERNAL_CLOCK_FREQ = @AWG_EXTERNAL_CLOCK_FREQ@;
 // -----------------------------------------------------------------------------
 
 constexpr int AOD_MAX_TONES = @AOD_MAX_TONES@;
+constexpr int MAX_WAVEFORM_BATCHES = @MAX_WAVEFORM_BATCHES@;
 constexpr int WAVEFORM_TIMESTEP = @WAVEFORM_TIMESTEP@;
 
 constexpr size_t AOD_DMA_BUFFER_SIZE = @AOD_DMA_BUFFER_SIZE@;

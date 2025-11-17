@@ -33,7 +33,27 @@ enum class AWGCommandType {
     INITIALIZE,
     START,
     STOP,
-    // Future: GENERATE_WAVEFORM, etc.
+    WAVEFORM_BATCH,
+};
+
+// Single waveform with interpolated tone parameters
+struct WaveformData {
+    int32_t duration;          // In WAVEFORM_TIMESTEP units
+    int32_t num_tones;
+    int32_t num_steps;
+
+    std::vector<int32_t> time_steps;      // Size: num_steps (interpolation x-coordinates)
+    std::vector<float> frequencies;       // Size: num_steps * num_channels * num_tones
+    std::vector<float> amplitudes;        // Size: num_steps * num_channels * num_tones
+    std::vector<float> offset_phases;     // Size: num_steps * num_channels * num_tones
+};
+
+// Batch of waveforms
+struct WaveformBatch {
+    int trigger_type;                     // TriggerType enum from protobuf
+    int32_t delay;                        // In WAVEFORM_TIMESTEP units
+    std::vector<WaveformData> waveforms;
+    int32_t batch_id;                     // Unique ID
 };
 
 // Waveform command structure
@@ -45,8 +65,13 @@ struct WaveformCommand {
         std::vector<int32> amplitudes_mv;  // mV for each active channel
     };
 
-    // Union of command data (for now just Initialize)
+    struct WaveformBatchData {
+        WaveformBatch batch;
+    };
+
+    // Union of command data
     std::shared_ptr<InitializeData> initialize_data;
+    std::shared_ptr<WaveformBatchData> waveform_batch_data;
 };
 
 // AWG state
@@ -104,6 +129,9 @@ private:
     // Stop AWG output and DMA (called from thread)
     bool stopAWG();
 
+    // Store waveform batch in queue (called from thread)
+    bool storeBatch(const WaveformBatch& batch);
+
     // Zero the software buffer
     void zeroBuffer();
 
@@ -141,6 +169,12 @@ private:
 
     // GPU buffers
     GPUBuffers gpu_buffers_;
+
+    // Waveform batch queue
+    std::unique_ptr<WaveformBatch[]> batch_queue_;  // Fixed-size array allocated in constructor
+    std::atomic<int> num_batches_;                  // Current number of queued batches
+    std::atomic<int> next_batch_id_;                // For generating unique batch IDs
+    int max_batches_;                                // Size of batch_queue_ array
 };
 
 } // namespace aod

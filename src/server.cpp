@@ -118,6 +118,10 @@ Response AODServer::handleRequest(const Request& request) {
             response = handleStop(request.stop());
             break;
 
+        case Request::kWaveformBatch:
+            response = handleWaveformBatch(request.waveform_batch());
+            break;
+
         case Request::COMMAND_NOT_SET:
             std::cerr << "[Server] Received request with no command set" << std::endl;
             break;
@@ -206,6 +210,86 @@ Response AODServer::handleStop(const StopRequest& request) {
         std::cout << "[Server] Stop completed successfully" << std::endl;
     } else {
         std::cout << "[Server] Stop failed: " << result.error_message << std::endl;
+    }
+
+    return response;
+}
+
+Response AODServer::handleWaveformBatch(const WaveformBatchRequest& request) {
+    std::cout << "[Server] WaveformBatch command received" << std::endl;
+
+    // Convert protobuf to C++ structs
+    WaveformBatch batch;
+
+    // Convert trigger type (use protobuf enum value directly)
+    batch.trigger_type = request.trigger_type();
+    batch.delay = request.delay();
+
+    // Generate batch ID
+    static std::atomic<int> batch_id_counter(1);
+    batch.batch_id = batch_id_counter++;
+
+    std::cout << "[Server] Batch ID: " << batch.batch_id << std::endl;
+    std::cout << "[Server] Trigger: " << (batch.trigger_type == TRIGGER_SOFTWARE ? "software" : "external") << std::endl;
+    std::cout << "[Server] Delay: " << batch.delay << " timesteps" << std::endl;
+    std::cout << "[Server] Waveforms: " << request.waveforms_size() << std::endl;
+
+    // Convert waveforms
+    for (int i = 0; i < request.waveforms_size(); i++) {
+        const auto& pb_wf = request.waveforms(i);
+
+        WaveformData wf;
+        wf.duration = pb_wf.duration();
+        wf.num_tones = pb_wf.num_tones();
+        wf.num_steps = pb_wf.num_steps();
+
+        // Copy time_steps
+        wf.time_steps.reserve(pb_wf.time_steps_size());
+        for (int j = 0; j < pb_wf.time_steps_size(); j++) {
+            wf.time_steps.push_back(pb_wf.time_steps(j));
+        }
+
+        // Copy frequencies
+        wf.frequencies.reserve(pb_wf.frequencies_size());
+        for (int j = 0; j < pb_wf.frequencies_size(); j++) {
+            wf.frequencies.push_back(pb_wf.frequencies(j));
+        }
+
+        // Copy amplitudes
+        wf.amplitudes.reserve(pb_wf.amplitudes_size());
+        for (int j = 0; j < pb_wf.amplitudes_size(); j++) {
+            wf.amplitudes.push_back(pb_wf.amplitudes(j));
+        }
+
+        // Copy offset_phases
+        wf.offset_phases.reserve(pb_wf.offset_phases_size());
+        for (int j = 0; j < pb_wf.offset_phases_size(); j++) {
+            wf.offset_phases.push_back(pb_wf.offset_phases(j));
+        }
+
+        batch.waveforms.push_back(wf);
+    }
+
+    // Create command for AWG thread
+    WaveformCommand cmd;
+    cmd.type = AWGCommandType::WAVEFORM_BATCH;
+    cmd.waveform_batch_data = std::make_shared<WaveformCommand::WaveformBatchData>();
+    cmd.waveform_batch_data->batch = batch;
+
+    // Queue command and wait for completion
+    CommandResult result = awg_->queueCommandAndWait(cmd, 1000);
+
+    // Create response
+    Response response;
+    WaveformBatchResponse* batch_response = response.mutable_waveform_batch();
+    batch_response->set_success(result.success);
+    batch_response->set_error_message(result.error_message);
+    batch_response->set_batch_id(batch.batch_id);
+
+    if (result.success) {
+        std::cout << "[Server] WaveformBatch stored successfully" << std::endl;
+    } else {
+        std::cout << "[Server] WaveformBatch failed: " << result.error_message << std::endl;
     }
 
     return response;

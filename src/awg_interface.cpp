@@ -17,7 +17,12 @@ AWGInterface::AWGInterface()
       sw_buffer_(nullptr),
       sw_buffer_size_(0),
       notify_size_(0),
-      command_queue_(std::make_unique<ThreadSafeQueue<WaveformCommand>>()) {
+      command_queue_(std::make_unique<ThreadSafeQueue<WaveformCommand>>()),
+      num_batches_(0),
+      next_batch_id_(1) {
+    using namespace aod::config;
+    max_batches_ = MAX_WAVEFORM_BATCHES;
+    batch_queue_ = std::make_unique<WaveformBatch[]>(max_batches_);
 }
 
 AWGInterface::~AWGInterface() {
@@ -399,11 +404,77 @@ bool AWGInterface::stopAWG() {
     // Zero buffer
     zeroBuffer();
 
+    // Clear waveform batch queue
+    num_batches_ = 0;
+    std::cout << "[AWG Thread] Waveform batch queue cleared" << std::endl;
+
     // Set state to INITIALIZED (stops streaming but keeps initialization)
     state_ = AWGState::INITIALIZED;
     last_result_ = CommandResult{true, ""};
 
     std::cout << "[AWG Thread] AWG stopped successfully" << std::endl;
+    return true;
+}
+
+bool AWGInterface::storeBatch(const WaveformBatch& batch) {
+    using namespace aod::config;
+
+    std::cout << "[AWG Thread] Storing waveform batch..." << std::endl;
+
+    // Check if queue is full
+    int current_batches = num_batches_.load();
+    if (current_batches >= max_batches_) {
+        std::string error = "Batch queue full (" + std::to_string(max_batches_) + " batches)";
+        std::cerr << "[AWG Thread] " << error << std::endl;
+        last_result_ = CommandResult{false, error};
+        return false;
+    }
+
+    // Validate batch data
+    int num_channels = __builtin_popcount(AWG_CHANNEL_MASK);
+
+    for (size_t i = 0; i < batch.waveforms.size(); i++) {
+        const auto& wf = batch.waveforms[i];
+
+        // Calculate expected array size
+        size_t expected_size = wf.num_steps * num_channels * wf.num_tones;
+
+        // Validate array sizes
+        if (wf.time_steps.size() != static_cast<size_t>(wf.num_steps)) {
+            std::string error = "Waveform " + std::to_string(i) + ": time_steps size mismatch";
+            last_result_ = CommandResult{false, error};
+            return false;
+        }
+
+        if (wf.frequencies.size() != expected_size) {
+            std::string error = "Waveform " + std::to_string(i) + ": frequencies size mismatch. "
+                               "Expected " + std::to_string(expected_size) + ", got " + std::to_string(wf.frequencies.size());
+            last_result_ = CommandResult{false, error};
+            return false;
+        }
+
+        if (wf.amplitudes.size() != expected_size) {
+            std::string error = "Waveform " + std::to_string(i) + ": amplitudes size mismatch";
+            last_result_ = CommandResult{false, error};
+            return false;
+        }
+
+        if (wf.offset_phases.size() != expected_size) {
+            std::string error = "Waveform " + std::to_string(i) + ": offset_phases size mismatch";
+            last_result_ = CommandResult{false, error};
+            return false;
+        }
+    }
+
+    // Store batch in queue
+    batch_queue_[current_batches] = batch;
+    num_batches_++;
+
+    std::cout << "[AWG Thread] Batch stored successfully (ID: " << batch.batch_id << ")" << std::endl;
+    std::cout << "[AWG Thread]   Waveforms: " << batch.waveforms.size() << std::endl;
+    std::cout << "[AWG Thread]   Queue: " << num_batches_ << "/" << max_batches_ << std::endl;
+
+    last_result_ = CommandResult{true, ""};
     return true;
 }
 
@@ -439,6 +510,16 @@ void AWGInterface::processCommand(const WaveformCommand& cmd) {
         case AWGCommandType::STOP:
             stopAWG();
             // stopAWG sets last_result_
+            break;
+
+        case AWGCommandType::WAVEFORM_BATCH:
+            if (cmd.waveform_batch_data) {
+                storeBatch(cmd.waveform_batch_data->batch);
+                // storeBatch sets last_result_
+            } else {
+                std::cerr << "[AWG Thread] WaveformBatch command missing data" << std::endl;
+                last_result_ = CommandResult{false, "WaveformBatch command missing data"};
+            }
             break;
 
         default:

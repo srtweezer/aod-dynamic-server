@@ -3,6 +3,15 @@ syntax = "proto3";
 package aod;
 
 // ============================================================================
+// Enumerations
+// ============================================================================
+
+enum TriggerType {
+  TRIGGER_SOFTWARE = 0;
+  TRIGGER_EXTERNAL = 1;
+}
+
+// ============================================================================
 // Ping Command
 // ============================================================================
 
@@ -51,6 +60,60 @@ message StopResponse {
 }
 
 // ============================================================================
+// WaveformBatch Command
+// ============================================================================
+
+// Single waveform with interpolated tone parameters
+message Waveform {
+  // Duration in units of WAVEFORM_TIMESTEP
+  int32 duration = 1;
+
+  // Number of tones
+  int32 num_tones = 2;
+
+  // Number of interpolation steps
+  int32 num_steps = 3;
+
+  // Interpolation time points (in units of WAVEFORM_TIMESTEP)
+  // Size: num_steps
+  // Defines the x-coordinates for interpolation
+  repeated int32 time_steps = 4;
+
+  // Tone parameters (flattened arrays)
+  // Size for each: num_steps * num_channels * num_tones
+  // Index: [step * num_channels * num_tones + channel * num_tones + tone]
+
+  // Frequencies in Hz
+  repeated float frequencies = 5;
+
+  // Amplitudes (normalized, 0.0 to 1.0 typically)
+  repeated float amplitudes = 6;
+
+  // Offset phases (radians)
+  repeated float offset_phases = 7;
+}
+
+// Batch of waveforms to execute sequentially
+message WaveformBatchRequest {
+  // Trigger type
+  TriggerType trigger_type = 1;
+
+  // Delay from trigger in units of WAVEFORM_TIMESTEP
+  int32 delay = 2;
+
+  // Array of waveforms to execute
+  // Note: Consecutive waveforms must be separated by at least 1 WAVEFORM_TIMESTEP
+  repeated Waveform waveforms = 3;
+}
+
+// Response from waveform batch command
+message WaveformBatchResponse {
+  bool success = 1;
+  string error_message = 2;
+  int32 batch_id = 3;  // Unique ID for tracking this batch
+}
+
+// ============================================================================
 // Top-Level Request/Response Wrappers
 // ============================================================================
 
@@ -60,8 +123,8 @@ message Request {
     PingRequest ping = 1;
     InitializeRequest initialize = 2;
     StopRequest stop = 3;
+    WaveformBatchRequest waveform_batch = 4;
     // Future commands will be added here:
-    // GenerateWaveformRequest generate_waveform = 4;
     // StartRequest start = 5;
     // etc.
   }
@@ -73,8 +136,8 @@ message Response {
     PingResponse ping = 1;
     InitializeResponse initialize = 2;
     StopResponse stop = 3;
+    WaveformBatchResponse waveform_batch = 4;
     // Future responses will be added here:
-    // GenerateWaveformResponse generate_waveform = 4;
     // ErrorResponse error = 5;
     // etc.
   }
