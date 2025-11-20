@@ -223,7 +223,6 @@ Response AODServer::handleWaveformBatch(const WaveformBatchRequest& request) {
 
     // Convert trigger type (use protobuf enum value directly)
     batch.trigger_type = request.trigger_type();
-    batch.delay = request.delay();
 
     // Generate batch ID
     static std::atomic<int> batch_id_counter(1);
@@ -231,7 +230,6 @@ Response AODServer::handleWaveformBatch(const WaveformBatchRequest& request) {
 
     std::cout << "[Server] Batch ID: " << batch.batch_id << std::endl;
     std::cout << "[Server] Trigger: " << (batch.trigger_type == TRIGGER_SOFTWARE ? "software" : "external") << std::endl;
-    std::cout << "[Server] Delay: " << batch.delay << " timesteps" << std::endl;
     std::cout << "[Server] Waveforms: " << request.waveforms_size() << std::endl;
 
     // Convert waveforms
@@ -239,6 +237,7 @@ Response AODServer::handleWaveformBatch(const WaveformBatchRequest& request) {
         const auto& pb_wf = request.waveforms(i);
 
         WaveformData wf;
+        wf.delay = pb_wf.delay();
         wf.duration = pb_wf.duration();
         wf.num_tones = pb_wf.num_tones();
         wf.num_steps = pb_wf.num_steps();

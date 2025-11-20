@@ -38,6 +38,7 @@ enum class AWGCommandType {
 
 // Single waveform with interpolated tone parameters
 struct WaveformData {
+    int32_t delay;             // In WAVEFORM_TIMESTEP units (from trigger or previous waveform)
     int32_t duration;          // In WAVEFORM_TIMESTEP units
     int32_t num_tones;
     int32_t num_steps;
@@ -51,7 +52,6 @@ struct WaveformData {
 // Batch of waveforms
 struct WaveformBatch {
     int trigger_type;                     // TriggerType enum from protobuf
-    int32_t delay;                        // In WAVEFORM_TIMESTEP units
     std::vector<WaveformData> waveforms;
     int32_t batch_id;                     // Unique ID
 };

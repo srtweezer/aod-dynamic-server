@@ -240,19 +240,19 @@ enum TriggerType {
 }
 
 message Waveform {
-  int32 duration = 1;              // In WAVEFORM_TIMESTEP units
-  int32 num_tones = 2;
-  int32 num_steps = 3;             // Number of interpolation points
-  repeated int32 time_steps = 4;   // Interpolation x-coordinates (in WAVEFORM_TIMESTEP units)
-  repeated float frequencies = 5;   // Flattened: [step][channel][tone]
-  repeated float amplitudes = 6;    // Flattened: [step][channel][tone]
-  repeated float offset_phases = 7; // Flattened: [step][channel][tone]
+  int32 delay = 1;                 // Delay in WAVEFORM_TIMESTEP units
+  int32 duration = 2;              // Duration in WAVEFORM_TIMESTEP units
+  int32 num_tones = 3;
+  int32 num_steps = 4;             // Number of interpolation points
+  repeated int32 time_steps = 5;   // Interpolation x-coordinates (in WAVEFORM_TIMESTEP units)
+  repeated float frequencies = 6;   // Flattened: [step][channel][tone], in Hz
+  repeated float amplitudes = 7;    // Flattened: [step][channel][tone]
+  repeated float offset_phases = 8; // Flattened: [step][channel][tone]
 }
 
 message WaveformBatchRequest {
   TriggerType trigger_type = 1;
-  int32 delay = 2;                 // Delay from trigger (in WAVEFORM_TIMESTEP units)
-  repeated Waveform waveforms = 3;
+  repeated Waveform waveforms = 2;
 }
 ```
 
@@ -270,15 +270,17 @@ message WaveformBatchResponse {
 
 **Batch-level:**
 - `trigger_type`: SOFTWARE (0) or EXTERNAL (1)
-- `delay`: Delay from trigger in WAVEFORM_TIMESTEP units
 - `waveforms`: Array of waveforms to execute sequentially
 
 **Per-waveform:**
+- `delay`: Delay in WAVEFORM_TIMESTEP units
+  - **First waveform**: delay from trigger event
+  - **Subsequent waveforms**: delay from end of previous waveform
 - `duration`: Waveform length in WAVEFORM_TIMESTEP units
 - `num_tones`: Number of frequency tones
 - `num_steps`: Number of interpolation points for tone parameters
 - `time_steps`: Interpolation time coordinates (size: num_steps)
-  - Values in WAVEFORM_TIMESTEP units
+  - Values in WAVEFORM_TIMESTEP units relative to waveform start
   - Defines when each interpolation point occurs
 
 **Tone parameter arrays:**
@@ -310,15 +312,15 @@ request = aod_server_pb2.Request()
 batch_req = request.waveform_batch
 
 batch_req.trigger_type = aod_server_pb2.TRIGGER_SOFTWARE
-batch_req.delay = 10  # 10 timesteps after trigger
 
-# Add a waveform
+# Add first waveform
 wf = batch_req.waveforms.add()
+wf.delay = 10        # 10 timesteps after trigger
 wf.duration = 100
 wf.num_tones = 2
 wf.num_steps = 3
 
-# Define interpolation times
+# Define interpolation times (relative to waveform start)
 wf.time_steps.extend([0, 50, 100])
 
 # Define tone parameters (flattened)
@@ -360,11 +362,15 @@ else:
 
 #### Notes
 
-- Waveform durations and delays are in **WAVEFORM_TIMESTEP units** (compile-time config, typically 512 samples)
-- Consecutive waveforms must be separated by at least 1 timestep
-- Frequencies are in **Hz** (e.g., 80.5e6 for 80.5 MHz AOD frequency)
-- Time resolution: 1 WAVEFORM_TIMESTEP = WAVEFORM_TIMESTEP / sample_rate seconds
-- Maximum batches in queue: MAX_WAVEFORM_BATCHES (compile-time config, default: 16)
+- **Timing units**: All delays and durations are in **WAVEFORM_TIMESTEP units** (compile-time config, typically 512 samples)
+  - Time resolution: 1 WAVEFORM_TIMESTEP = WAVEFORM_TIMESTEP / sample_rate seconds
+  - Example: With 512 samples/timestep and 625 MHz sample rate: 1 timestep ≈ 0.82 μs
+- **Delay interpretation**:
+  - First waveform delay: time from trigger to waveform start
+  - Subsequent waveform delays: time from previous waveform end to next waveform start
+  - Minimum delay: 0 (back-to-back waveforms allowed)
+- **Frequencies** are in **Hz** (e.g., 80.5e6 for 80.5 MHz AOD frequency)
+- **Maximum batches** in queue: MAX_WAVEFORM_BATCHES (compile-time config, default: 16)
 
 ---
 
