@@ -5,6 +5,7 @@
 #include <cstring>
 #include <algorithm>
 #include <chrono>
+#include <unistd.h>  // For getpid()
 
 namespace aod {
 
@@ -232,6 +233,26 @@ bool AWGInterface::connectHardware() {
             card_handle_ = nullptr;
             return false;
         }
+
+        // Initialize shared memory if enabled
+        if (USE_SHARED_MEMORY) {
+            // Generate unique name using process ID
+            std::string shm_name = "/aod_server_" + std::to_string(getpid());
+
+            // Calculate size
+            int num_channels = __builtin_popcount(AWG_CHANNEL_MASK);
+            size_t arrays_size = MAX_WAVEFORM_TIMESTEPS * num_channels * AOD_MAX_TONES;
+            size_t shm_size =
+                MAX_WAVEFORM_TIMESTEPS * sizeof(int32_t) +      // timesteps
+                MAX_WAVEFORM_TIMESTEPS * sizeof(uint8_t) +      // do_generate
+                3 * arrays_size * sizeof(float);                 // freq/amp/phase
+
+            shared_memory_ = std::make_unique<SharedMemoryManager>();
+            if (!shared_memory_->create(shm_name, shm_size)) {
+                std::cerr << "[AWG] Warning: Failed to create shared memory, will use ZMQ mode" << std::endl;
+                shared_memory_.reset();
+            }
+        }
     }
 
     if (!found) {
@@ -251,7 +272,13 @@ void AWGInterface::disconnectHardware() {
     if (connected_) {
         std::cout << "[AWG Thread] Disconnecting from AWG..." << std::endl;
 
-        // Free GPU buffers first
+        // Destroy shared memory if exists
+        if (shared_memory_) {
+            shared_memory_->destroy();
+            shared_memory_.reset();
+        }
+
+        // Free GPU buffers
         freeGPU();
 
         if (card_handle_) {
@@ -574,6 +601,32 @@ void AWGInterface::processCommand(const WaveformCommand& cmd) {
         result_ready_ = true;
     }
     result_cv_.notify_one();
+}
+
+// Shared memory accessors
+bool AWGInterface::hasSharedMemory() const {
+    return shared_memory_ && shared_memory_->isCreated();
+}
+
+std::string AWGInterface::getSharedMemoryName() const {
+    if (shared_memory_) {
+        return shared_memory_->getName();
+    }
+    return "";
+}
+
+size_t AWGInterface::getSharedMemorySize() const {
+    if (shared_memory_) {
+        return shared_memory_->getSize();
+    }
+    return 0;
+}
+
+void* AWGInterface::getSharedMemoryPointer() const {
+    if (shared_memory_) {
+        return shared_memory_->getPointer();
+    }
+    return nullptr;
 }
 
 } // namespace aod

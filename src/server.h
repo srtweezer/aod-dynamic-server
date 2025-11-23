@@ -39,6 +39,8 @@ private:
     json handleStart(const json& request);
     json handleStop(const json& request);
     json handleWaveformBatch(const json& request, zmq::socket_t& socket);
+    json handleWaveformBatchZmq(const json& request, zmq::socket_t& socket);
+    json handleWaveformBatchShm(const json& request);
 
     // ZMQ context and socket
     std::unique_ptr<zmq::context_t> context_;

@@ -80,6 +80,11 @@ set(AOD_HW_BUFFER_SIZE 1073741824 CACHE STRING "Hardware buffer size in bytes (1
 # CUDA device ID to use (0 = first GPU)
 set(GPU_DEVICE_ID 0 CACHE STRING "CUDA device index")
 
+# Use POSIX shared memory for zero-copy client communication (localhost only)
+# When enabled, client writes arrays directly to shared memory instead of ZMQ
+# Provides ~3x faster upload for large waveform batches
+set(USE_SHARED_MEMORY TRUE CACHE BOOL "Enable shared memory for client communication")
+
 # Enable GPU acceleration for waveform generation
 set(GPU_ENABLED TRUE CACHE BOOL "Enable GPU-accelerated waveform generation")
 

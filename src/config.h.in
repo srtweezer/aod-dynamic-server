@@ -52,6 +52,7 @@ constexpr size_t AOD_HW_BUFFER_SIZE = @AOD_HW_BUFFER_SIZE@;
 
 constexpr int GPU_DEVICE_ID = @GPU_DEVICE_ID@;
 constexpr bool GPU_ENABLED = @GPU_ENABLED_CPP@;
+constexpr bool USE_SHARED_MEMORY = @USE_SHARED_MEMORY_CPP@;
 
 constexpr int GPU_BLOCK_SIZE = @GPU_BLOCK_SIZE@;
 constexpr int GPU_GRID_SIZE = @GPU_GRID_SIZE@;

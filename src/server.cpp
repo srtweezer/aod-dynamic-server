@@ -156,10 +156,29 @@ json AODServer::handleInitialize(const json& request) {
         std::cout << "[Server] Initialize failed: " << result.error_message << std::endl;
     }
 
-    return {
+    json response = {
         {"success", result.success},
         {"error_message", result.error_message}
     };
+
+    // Add shared memory info if enabled
+    if (result.success && awg_->hasSharedMemory()) {
+        using namespace aod::config;
+        int num_channels = __builtin_popcount(AWG_CHANNEL_MASK);
+
+        response["shared_memory"] = {
+            {"enabled", true},
+            {"name", awg_->getSharedMemoryName()},
+            {"size", awg_->getSharedMemorySize()},
+            {"num_channels", num_channels}
+        };
+        std::cout << "[Server] Shared memory enabled: " << awg_->getSharedMemoryName() << std::endl;
+        std::cout << "[Server] Layout is DYNAMIC - client writes compact arrays (actual num_tones)" << std::endl;
+    } else {
+        response["shared_memory"] = {{"enabled", false}};
+    }
+
+    return response;
 }
 
 json AODServer::handleStart(const json& request) {
@@ -207,11 +226,24 @@ json AODServer::handleStop(const json& request) {
 }
 
 json AODServer::handleWaveformBatch(const json& request, zmq::socket_t& socket) {
+    // Route to appropriate handler based on use_shared_memory flag
+    bool use_shm = request.value("use_shared_memory", false);
+
+    if (use_shm && awg_->hasSharedMemory()) {
+        std::cout << "[Server] Using shared memory path" << std::endl;
+        return handleWaveformBatchShm(request);
+    } else {
+        std::cout << "[Server] Using ZMQ arrays path" << std::endl;
+        return handleWaveformBatchZmq(request, socket);
+    }
+}
+
+json AODServer::handleWaveformBatchZmq(const json& request, zmq::socket_t& socket) {
     using namespace aod::config;
 
     auto t_start = std::chrono::high_resolution_clock::now();
 
-    std::cout << "[Server] WaveformBatch command received" << std::endl;
+    std::cout << "[Server] WaveformBatch command received (ZMQ mode)" << std::endl;
 
     // Extract metadata (client provides batch_id)
     int batch_id = request["batch_id"];
@@ -304,6 +336,110 @@ json AODServer::handleWaveformBatch(const json& request, zmq::socket_t& socket) 
         std::cout << "[Server]   Validation:     " << validate_us << " μs" << std::endl;
         std::cout << "[Server]   GPU upload:     " << queue_us << " μs (includes AWG thread)" << std::endl;
         std::cout << "[Server]   Total:          " << total_us << " μs" << std::endl;
+        std::cout << "[Server] ═══════════════════════════════════════" << std::endl;
+    } else {
+        std::cout << "[Server] WaveformBatch failed: " << result.error_message << std::endl;
+    }
+
+    return {
+        {"success", result.success},
+        {"error_message", result.error_message},
+        {"batch_id", batch_id}
+    };
+}
+
+json AODServer::handleWaveformBatchShm(const json& request) {
+    using namespace aod::config;
+
+    auto t_start = std::chrono::high_resolution_clock::now();
+
+    std::cout << "[Server] WaveformBatch command received (Shared Memory mode)" << std::endl;
+
+    // Extract metadata (client provides batch_id)
+    int batch_id = request["batch_id"];
+    int num_timesteps = request["num_timesteps"];
+    int num_tones = request["num_tones"];
+    std::string trigger_type = request.value("trigger_type", "software");
+
+    // Calculate num_channels from compile-time config
+    int num_channels = __builtin_popcount(AWG_CHANNEL_MASK);
+
+    std::cout << "[Server] Batch ID: " << batch_id << std::endl;
+    std::cout << "[Server] Timesteps: " << num_timesteps << std::endl;
+    std::cout << "[Server] Channels: " << num_channels << " (from config)" << std::endl;
+    std::cout << "[Server] Tones: " << num_tones << std::endl;
+    std::cout << "[Server] Trigger: " << trigger_type << std::endl;
+
+    // Get pointers into shared memory (client has already written data)
+    auto t_shm_start = std::chrono::high_resolution_clock::now();
+
+    void* shm_ptr = awg_->getSharedMemoryPointer();
+    if (!shm_ptr) {
+        return {
+            {"success", false},
+            {"error_message", "Shared memory not available"}
+        };
+    }
+
+    // Calculate DYNAMIC offsets based on actual num_timesteps and num_tones
+    // Client writes COMPACT arrays (not padded to AOD_MAX_TONES)
+    // Layout: timesteps, do_generate, frequencies(compact), amplitudes(compact), phases(compact)
+
+    size_t timesteps_offset = 0;
+    size_t do_generate_offset = num_timesteps * sizeof(int32_t);
+    size_t frequencies_offset = do_generate_offset + num_timesteps * sizeof(uint8_t);
+    // Align to 16 bytes for performance
+    frequencies_offset = (frequencies_offset + 15) & ~15;
+
+    // Compact array size (uses actual num_tones, not AOD_MAX_TONES)
+    size_t compact_array_elements = num_timesteps * num_channels * num_tones;
+    size_t compact_array_bytes = compact_array_elements * sizeof(float);
+
+    size_t amplitudes_offset = frequencies_offset + compact_array_bytes;
+    size_t phases_offset = amplitudes_offset + compact_array_bytes;
+
+    // Get pointers to compact arrays in shared memory
+    char* shm_base = static_cast<char*>(shm_ptr);
+    int32_t* h_timesteps = reinterpret_cast<int32_t*>(shm_base + timesteps_offset);
+    uint8_t* h_do_generate = reinterpret_cast<uint8_t*>(shm_base + do_generate_offset);
+    float* h_frequencies = reinterpret_cast<float*>(shm_base + frequencies_offset);
+    float* h_amplitudes = reinterpret_cast<float*>(shm_base + amplitudes_offset);
+    float* h_offset_phases = reinterpret_cast<float*>(shm_base + phases_offset);
+
+    auto t_shm_end = std::chrono::high_resolution_clock::now();
+    auto shm_us = std::chrono::duration_cast<std::chrono::microseconds>(t_shm_end - t_shm_start).count();
+    std::cout << "[Server] Shared memory pointer setup: " << shm_us << " μs" << std::endl;
+
+    // Create command - pass pointers to shared memory
+    WaveformCommand cmd;
+    cmd.type = AWGCommandType::WAVEFORM_BATCH;
+    cmd.waveform_batch_data = std::make_shared<WaveformCommand::WaveformBatchData>();
+    cmd.waveform_batch_data->batch_id = batch_id;
+    cmd.waveform_batch_data->num_timesteps = num_timesteps;
+    cmd.waveform_batch_data->num_tones = num_tones;
+    cmd.waveform_batch_data->trigger_type = trigger_type;
+    cmd.waveform_batch_data->h_timesteps = h_timesteps;
+    cmd.waveform_batch_data->h_do_generate = h_do_generate;
+    cmd.waveform_batch_data->h_frequencies = h_frequencies;
+    cmd.waveform_batch_data->h_amplitudes = h_amplitudes;
+    cmd.waveform_batch_data->h_offset_phases = h_offset_phases;
+
+    // Queue command and wait for completion (synchronous copy to GPU in AWG thread)
+    auto t_queue_start = std::chrono::high_resolution_clock::now();
+    CommandResult result = awg_->queueCommandAndWait(cmd, 1000);
+    auto t_queue_end = std::chrono::high_resolution_clock::now();
+    auto queue_us = std::chrono::duration_cast<std::chrono::microseconds>(t_queue_end - t_queue_start).count();
+
+    auto t_total_end = std::chrono::high_resolution_clock::now();
+    auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(t_total_end - t_start).count();
+
+    if (result.success) {
+        std::cout << "[Server] WaveformBatch uploaded successfully" << std::endl;
+        std::cout << "[Server] ═══════════════════════════════════════" << std::endl;
+        std::cout << "[Server] Performance Profile (Shared Memory):" << std::endl;
+        std::cout << "[Server]   SHM pointer setup: " << shm_us << " μs" << std::endl;
+        std::cout << "[Server]   GPU upload:        " << queue_us << " μs (includes AWG thread)" << std::endl;
+        std::cout << "[Server]   Total:             " << total_us << " μs" << std::endl;
         std::cout << "[Server] ═══════════════════════════════════════" << std::endl;
     } else {
         std::cout << "[Server] WaveformBatch failed: " << result.error_message << std::endl;

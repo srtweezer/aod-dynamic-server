@@ -34,6 +34,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Optimization flags
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
+
+message(STATUS "Optimization level: -O3 (maximum performance)")
+
 # Find required packages
 find_package(PkgConfig REQUIRED)
 
@@ -64,6 +70,12 @@ if(GPU_ENABLED)
     set(GPU_ENABLED_CPP "true")
 else()
     set(GPU_ENABLED_CPP "false")
+endif()
+
+if(USE_SHARED_MEMORY)
+    set(USE_SHARED_MEMORY_CPP "true")
+else()
+    set(USE_SHARED_MEMORY_CPP "false")
 endif()
 
 # Note: Buffer alignment validation skipped in CMake due to binary literal parsing complexity

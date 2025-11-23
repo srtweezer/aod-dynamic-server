@@ -3,6 +3,7 @@ set(SERVER_SOURCES
     main.cpp
     server.cpp
     awg_interface.cpp
+    shared_memory.cpp
     cuda/gpu_buffers.cu
 )
 
@@ -19,6 +20,7 @@ set_target_properties(aod-server PROPERTIES
 target_link_libraries(aod-server
     ${ZMQ_LIBRARIES}
     pthread
+    rt  # POSIX shared memory
 )
 
 # Link Spectrum library (required)

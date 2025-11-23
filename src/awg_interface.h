@@ -17,6 +17,7 @@
 #include <spectrum/spcm_drv.h>
 
 #include "cuda/gpu_buffers.h"
+#include "shared_memory.h"
 
 namespace aod {
 
@@ -97,6 +98,12 @@ public:
     // Queue command and wait for completion (blocks until done or timeout)
     CommandResult queueCommandAndWait(const WaveformCommand& cmd, int timeout_ms = 1000);
 
+    // Shared memory accessors
+    bool hasSharedMemory() const;
+    std::string getSharedMemoryName() const;
+    size_t getSharedMemorySize() const;
+    void* getSharedMemoryPointer() const;
+
 private:
     // Thread entry point
     void threadLoop();
@@ -159,6 +166,9 @@ private:
 
     // GPU buffers
     GPUBuffers gpu_buffers_;
+
+    // Shared memory for zero-copy client communication (optional)
+    std::unique_ptr<SharedMemoryManager> shared_memory_;
 
     // Batch metadata tracking (for appending and playback order)
     std::vector<int> batch_ids_;                              // Sorted list of batch IDs for playback order
