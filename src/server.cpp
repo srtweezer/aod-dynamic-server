@@ -2,6 +2,7 @@
 #include "awg_interface.h"
 #include <config.h>
 #include <iostream>
+#include <chrono>
 
 namespace aod {
 
@@ -208,6 +209,8 @@ json AODServer::handleStop(const json& request) {
 json AODServer::handleWaveformBatch(const json& request, zmq::socket_t& socket) {
     using namespace aod::config;
 
+    auto t_start = std::chrono::high_resolution_clock::now();
+
     std::cout << "[Server] WaveformBatch command received" << std::endl;
 
     // Extract metadata (client provides batch_id)
@@ -226,6 +229,7 @@ json AODServer::handleWaveformBatch(const json& request, zmq::socket_t& socket) 
     std::cout << "[Server] Trigger: " << trigger_type << std::endl;
 
     // Receive 5 array parts
+    auto t_recv_start = std::chrono::high_resolution_clock::now();
     zmq::message_t arrays[5];
     for (int i = 0; i < 5; i++) {
         auto result = socket.recv(arrays[i], zmq::recv_flags::none);
@@ -236,8 +240,13 @@ json AODServer::handleWaveformBatch(const json& request, zmq::socket_t& socket) 
             };
         }
     }
+    auto t_recv_end = std::chrono::high_resolution_clock::now();
+    auto recv_us = std::chrono::duration_cast<std::chrono::microseconds>(t_recv_end - t_recv_start).count();
+    std::cout << "[Server] Array receive time: " << recv_us << " μs" << std::endl;
 
     // Get raw pointers (zero-copy access to ZMQ buffers)
+    auto t_process_start = std::chrono::high_resolution_clock::now();
+
     int32_t* h_timesteps = static_cast<int32_t*>(arrays[0].data());
     uint8_t* h_do_generate = static_cast<uint8_t*>(arrays[1].data());
     float* h_frequencies = static_cast<float*>(arrays[2].data());
@@ -260,6 +269,10 @@ json AODServer::handleWaveformBatch(const json& request, zmq::socket_t& socket) 
         };
     }
 
+    auto t_validate_end = std::chrono::high_resolution_clock::now();
+    auto validate_us = std::chrono::duration_cast<std::chrono::microseconds>(t_validate_end - t_process_start).count();
+    std::cout << "[Server] Validation time: " << validate_us << " μs" << std::endl;
+
     // Create command - pass pointers to ZMQ buffers
     WaveformCommand cmd;
     cmd.type = AWGCommandType::WAVEFORM_BATCH;
@@ -275,10 +288,23 @@ json AODServer::handleWaveformBatch(const json& request, zmq::socket_t& socket) 
     cmd.waveform_batch_data->h_offset_phases = h_offset_phases;
 
     // Queue command and wait for completion (synchronous copy to GPU in AWG thread)
+    auto t_queue_start = std::chrono::high_resolution_clock::now();
     CommandResult result = awg_->queueCommandAndWait(cmd, 1000);
+    auto t_queue_end = std::chrono::high_resolution_clock::now();
+    auto queue_us = std::chrono::duration_cast<std::chrono::microseconds>(t_queue_end - t_queue_start).count();
+
+    auto t_total_end = std::chrono::high_resolution_clock::now();
+    auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(t_total_end - t_start).count();
 
     if (result.success) {
         std::cout << "[Server] WaveformBatch uploaded successfully" << std::endl;
+        std::cout << "[Server] ═══════════════════════════════════════" << std::endl;
+        std::cout << "[Server] Performance Profile:" << std::endl;
+        std::cout << "[Server]   Array receive:  " << recv_us << " μs" << std::endl;
+        std::cout << "[Server]   Validation:     " << validate_us << " μs" << std::endl;
+        std::cout << "[Server]   GPU upload:     " << queue_us << " μs (includes AWG thread)" << std::endl;
+        std::cout << "[Server]   Total:          " << total_us << " μs" << std::endl;
+        std::cout << "[Server] ═══════════════════════════════════════" << std::endl;
     } else {
         std::cout << "[Server] WaveformBatch failed: " << result.error_message << std::endl;
     }

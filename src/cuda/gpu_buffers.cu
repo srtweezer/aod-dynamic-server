@@ -3,7 +3,7 @@
 #include <cuda_runtime.h>
 #include <iostream>
 #include <cstring>
-#include <vector>
+#include <chrono>
 
 namespace aod {
 
@@ -69,9 +69,10 @@ bool allocateGPUBuffers(GPUBuffers& buffers) {
     std::cout << "[GPU]   Batch timesteps: " << batch_timesteps_bytes / 1024 << " KB" << std::endl;
     std::cout << "[GPU]   Batch flags: " << batch_flags_bytes / 1024 << " KB" << std::endl;
     std::cout << "[GPU]   Batch freq/amp/phase (each): " << batch_arrays_bytes / (1024*1024) << " MB" << std::endl;
+    std::cout << "[GPU]   Temp buffers (each): " << batch_arrays_bytes / (1024*1024) << " MB" << std::endl;
     std::cout << "[GPU]   Total device: " << (samples_bytes + 3 * tone_params_bytes +
                                                 batch_timesteps_bytes + batch_flags_bytes +
-                                                3 * batch_arrays_bytes) / (1024*1024) << " MB" << std::endl;
+                                                6 * batch_arrays_bytes) / (1024*1024) << " MB" << std::endl;
     std::cout << "[GPU]   Pinned host: " << samples_bytes / (1024*1024) << " MB" << std::endl;
 
     // Allocate device memory
@@ -87,6 +88,11 @@ bool allocateGPUBuffers(GPUBuffers& buffers) {
     CUDA_CHECK(cudaMalloc(&buffers.d_batch_frequencies, batch_arrays_bytes));
     CUDA_CHECK(cudaMalloc(&buffers.d_batch_amplitudes, batch_arrays_bytes));
     CUDA_CHECK(cudaMalloc(&buffers.d_batch_offset_phases, batch_arrays_bytes));
+
+    // Allocate temporary buffers for strided copy (same size as batch arrays)
+    CUDA_CHECK(cudaMalloc(&buffers.d_temp_frequencies, batch_arrays_bytes));
+    CUDA_CHECK(cudaMalloc(&buffers.d_temp_amplitudes, batch_arrays_bytes));
+    CUDA_CHECK(cudaMalloc(&buffers.d_temp_offset_phases, batch_arrays_bytes));
 
     // Allocate pinned host memory
     std::cout << "[GPU] Allocating pinned host memory..." << std::endl;
@@ -157,6 +163,21 @@ void freeGPUBuffers(GPUBuffers& buffers) {
         buffers.d_batch_offset_phases = nullptr;
     }
 
+    if (buffers.d_temp_frequencies) {
+        CUDA_CHECK_VOID(cudaFree(buffers.d_temp_frequencies));
+        buffers.d_temp_frequencies = nullptr;
+    }
+
+    if (buffers.d_temp_amplitudes) {
+        CUDA_CHECK_VOID(cudaFree(buffers.d_temp_amplitudes));
+        buffers.d_temp_amplitudes = nullptr;
+    }
+
+    if (buffers.d_temp_offset_phases) {
+        CUDA_CHECK_VOID(cudaFree(buffers.d_temp_offset_phases));
+        buffers.d_temp_offset_phases = nullptr;
+    }
+
     if (buffers.h_samples_pinned) {
         CUDA_CHECK_VOID(cudaFreeHost(buffers.h_samples_pinned));
         buffers.h_samples_pinned = nullptr;
@@ -193,6 +214,43 @@ void zeroGPUBuffers(GPUBuffers& buffers) {
     std::cout << "[GPU] GPU buffers zeroed" << std::endl;
 }
 
+// CUDA kernel to expand tone arrays from num_tones to max_tones with zero-padding
+// Each thread handles one [timestep][channel] slice
+__global__ void expandTonesKernel(
+    const float* __restrict__ src,  // Compact: [timestep][channel][num_tones]
+    float* __restrict__ dst,        // Expanded: [timestep][channel][max_tones]
+    int num_timesteps,
+    int num_channels,
+    int num_tones,
+    int max_tones,
+    int dst_offset) {
+
+    // Global thread index
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total_slices = num_timesteps * num_channels;
+
+    if (idx < total_slices) {
+        int t = idx / num_channels;
+        int ch = idx % num_channels;
+
+        // Source base index in compact array: [t][ch][tone]
+        int src_base = t * num_channels * num_tones + ch * num_tones;
+
+        // Destination base index in expanded array: [(dst_offset + t)][ch][tone]
+        int dst_base = (dst_offset + t) * num_channels * max_tones + ch * max_tones;
+
+        // Copy actual tones
+        for (int tone = 0; tone < num_tones; tone++) {
+            dst[dst_base + tone] = src[src_base + tone];
+        }
+
+        // Zero-pad remaining tones
+        for (int tone = num_tones; tone < max_tones; tone++) {
+            dst[dst_base + tone] = 0.0f;
+        }
+    }
+}
+
 void uploadBatchDataToGPU(GPUBuffers& buffers,
                           const int32_t* h_timesteps,
                           const uint8_t* h_do_generate,
@@ -203,6 +261,8 @@ void uploadBatchDataToGPU(GPUBuffers& buffers,
                           int num_channels,
                           int num_tones,
                           int target_offset) {
+    auto t_start = std::chrono::high_resolution_clock::now();
+
     if (!buffers.d_batch_timesteps) {
         std::cerr << "[GPU] Warning: Batch arrays not allocated" << std::endl;
         return;
@@ -222,6 +282,7 @@ void uploadBatchDataToGPU(GPUBuffers& buffers,
     size_t timesteps_bytes = num_timesteps * sizeof(int32_t);
     size_t flags_bytes = num_timesteps * sizeof(uint8_t);
 
+    auto t_simple_start = std::chrono::high_resolution_clock::now();
     CUDA_CHECK_VOID(cudaMemcpy(buffers.d_batch_timesteps + target_offset,
                                h_timesteps,
                                timesteps_bytes,
@@ -230,10 +291,14 @@ void uploadBatchDataToGPU(GPUBuffers& buffers,
                                h_do_generate,
                                flags_bytes,
                                cudaMemcpyHostToDevice));
+    auto t_simple_end = std::chrono::high_resolution_clock::now();
+    auto simple_us = std::chrono::duration_cast<std::chrono::microseconds>(t_simple_end - t_simple_start).count();
 
     // For frequency/amplitude/phase arrays: do strided copy to pad num_tones → AOD_MAX_TONES
     // Client data layout: [timestep][channel][num_tones]
     // GPU data layout: [timestep][channel][AOD_MAX_TONES]
+
+    auto t_tones_start = std::chrono::high_resolution_clock::now();
 
     if (num_tones == max_tones) {
         // No padding needed - direct copy
@@ -248,44 +313,62 @@ void uploadBatchDataToGPU(GPUBuffers& buffers,
         CUDA_CHECK_VOID(cudaMemcpy(buffers.d_batch_offset_phases + offset_elements,
                                    h_offset_phases, arrays_bytes, cudaMemcpyHostToDevice));
     } else {
-        // Need strided copy: expand num_tones → max_tones with zero-padding
-        // Allocate temporary buffers on CPU for expanded data
-        size_t expanded_size = num_timesteps * num_channels * max_tones;
-        std::vector<float> expanded_freq(expanded_size, 0.0f);
-        std::vector<float> expanded_amp(expanded_size, 0.0f);
-        std::vector<float> expanded_phase(expanded_size, 0.0f);
+        // GPU-accelerated striding: copy compact data then expand on GPU
 
-        // Copy and expand
-        for (int t = 0; t < num_timesteps; t++) {
-            for (int ch = 0; ch < num_channels; ch++) {
-                for (int tone = 0; tone < num_tones; tone++) {
-                    // Source index: [t][ch][tone] with num_tones
-                    int src_idx = t * num_channels * num_tones + ch * num_tones + tone;
-                    // Dest index: [t][ch][tone] with max_tones
-                    int dst_idx = t * num_channels * max_tones + ch * max_tones + tone;
+        // 1. Copy compact data to temp buffers (smaller transfer)
+        size_t compact_elements = num_timesteps * num_channels * num_tones;
+        size_t compact_bytes = compact_elements * sizeof(float);
 
-                    expanded_freq[dst_idx] = h_frequencies[src_idx];
-                    expanded_amp[dst_idx] = h_amplitudes[src_idx];
-                    expanded_phase[dst_idx] = h_offset_phases[src_idx];
-                }
-                // Tones beyond num_tones are already zero-initialized
-            }
-        }
+        auto t_compact_copy_start = std::chrono::high_resolution_clock::now();
+        CUDA_CHECK_VOID(cudaMemcpy(buffers.d_temp_frequencies, h_frequencies,
+                                   compact_bytes, cudaMemcpyHostToDevice));
+        CUDA_CHECK_VOID(cudaMemcpy(buffers.d_temp_amplitudes, h_amplitudes,
+                                   compact_bytes, cudaMemcpyHostToDevice));
+        CUDA_CHECK_VOID(cudaMemcpy(buffers.d_temp_offset_phases, h_offset_phases,
+                                   compact_bytes, cudaMemcpyHostToDevice));
+        auto t_compact_copy_end = std::chrono::high_resolution_clock::now();
+        auto compact_copy_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            t_compact_copy_end - t_compact_copy_start).count();
 
-        // Copy expanded data to GPU at target offset
-        size_t expanded_bytes = expanded_size * sizeof(float);
-        int offset_elements = target_offset * num_channels * max_tones;
+        // 2. Launch kernel to expand in parallel
+        int total_slices = num_timesteps * num_channels;
+        int block_size = 256;
+        int grid_size = (total_slices + block_size - 1) / block_size;
 
-        CUDA_CHECK_VOID(cudaMemcpy(buffers.d_batch_frequencies + offset_elements,
-                                   expanded_freq.data(), expanded_bytes, cudaMemcpyHostToDevice));
-        CUDA_CHECK_VOID(cudaMemcpy(buffers.d_batch_amplitudes + offset_elements,
-                                   expanded_amp.data(), expanded_bytes, cudaMemcpyHostToDevice));
-        CUDA_CHECK_VOID(cudaMemcpy(buffers.d_batch_offset_phases + offset_elements,
-                                   expanded_phase.data(), expanded_bytes, cudaMemcpyHostToDevice));
+        auto t_kernel_start = std::chrono::high_resolution_clock::now();
+        expandTonesKernel<<<grid_size, block_size>>>(
+            buffers.d_temp_frequencies, buffers.d_batch_frequencies,
+            num_timesteps, num_channels, num_tones, max_tones, target_offset);
+        expandTonesKernel<<<grid_size, block_size>>>(
+            buffers.d_temp_amplitudes, buffers.d_batch_amplitudes,
+            num_timesteps, num_channels, num_tones, max_tones, target_offset);
+        expandTonesKernel<<<grid_size, block_size>>>(
+            buffers.d_temp_offset_phases, buffers.d_batch_offset_phases,
+            num_timesteps, num_channels, num_tones, max_tones, target_offset);
+
+        CUDA_CHECK_VOID(cudaDeviceSynchronize());
+        auto t_kernel_end = std::chrono::high_resolution_clock::now();
+        auto kernel_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            t_kernel_end - t_kernel_start).count();
+
+        std::cout << "[GPU]   ├─ Compact copy: " << compact_copy_us << " μs" << std::endl;
+        std::cout << "[GPU]   └─ Kernel expand: " << kernel_us << " μs" << std::endl;
     }
+
+    auto t_tones_end = std::chrono::high_resolution_clock::now();
+    auto tones_us = std::chrono::duration_cast<std::chrono::microseconds>(t_tones_end - t_tones_start).count();
+
+    auto t_total_end = std::chrono::high_resolution_clock::now();
+    auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(t_total_end - t_start).count();
 
     std::cout << "[GPU] Uploaded " << num_timesteps << " timesteps to GPU at offset "
               << target_offset << " (tones: " << num_tones << " → " << max_tones << ")" << std::endl;
+    std::cout << "[GPU] ─── GPU Copy Timing ───" << std::endl;
+    std::cout << "[GPU]   Timesteps/flags:   " << simple_us << " μs" << std::endl;
+    std::cout << "[GPU]   Tone arrays:       " << tones_us << " μs "
+              << (num_tones == max_tones ? "(direct)" : "(strided+padded)") << std::endl;
+    std::cout << "[GPU]   Total GPU copy:    " << total_us << " μs" << std::endl;
+    std::cout << "[GPU] ─────────────────────────" << std::endl;
 }
 
 } // namespace aod

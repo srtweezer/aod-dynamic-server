@@ -4,6 +4,7 @@
 #include <iostream>
 #include <cstring>
 #include <algorithm>
+#include <chrono>
 
 namespace aod {
 
@@ -420,6 +421,8 @@ bool AWGInterface::stopAWG() {
 bool AWGInterface::uploadBatchToGPU(const WaveformCommand::WaveformBatchData& data) {
     using namespace aod::config;
 
+    auto t_start = std::chrono::high_resolution_clock::now();
+
     std::cout << "[AWG Thread] Uploading batch to GPU..." << std::endl;
     std::cout << "[AWG Thread]   Batch ID: " << data.batch_id << std::endl;
     std::cout << "[AWG Thread]   Timesteps: " << data.num_timesteps << std::endl;
@@ -463,7 +466,11 @@ bool AWGInterface::uploadBatchToGPU(const WaveformCommand::WaveformBatchData& da
         return false;
     }
 
+    auto t_validation_done = std::chrono::high_resolution_clock::now();
+    auto validation_us = std::chrono::duration_cast<std::chrono::microseconds>(t_validation_done - t_start).count();
+
     // Append batch data to GPU arrays (with strided copy for num_tones padding)
+    auto t_gpu_start = std::chrono::high_resolution_clock::now();
     uploadBatchDataToGPU(gpu_buffers_,
                          data.h_timesteps,
                          data.h_do_generate,
@@ -474,6 +481,8 @@ bool AWGInterface::uploadBatchToGPU(const WaveformCommand::WaveformBatchData& da
                          num_channels,
                          data.num_tones,
                          max_timestep_index_);  // Append at current end
+    auto t_gpu_end = std::chrono::high_resolution_clock::now();
+    auto gpu_us = std::chrono::duration_cast<std::chrono::microseconds>(t_gpu_end - t_gpu_start).count();
 
     // Store batch metadata
     batch_trigger_types_[data.batch_id] = data.trigger_type;
@@ -487,12 +496,25 @@ bool AWGInterface::uploadBatchToGPU(const WaveformCommand::WaveformBatchData& da
     // Update max index
     max_timestep_index_ = new_max_index;
 
+    auto t_metadata_start = std::chrono::high_resolution_clock::now();
+    auto metadata_us = std::chrono::duration_cast<std::chrono::microseconds>(t_metadata_start - t_gpu_end).count();
+
+    auto t_total_end = std::chrono::high_resolution_clock::now();
+    auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(t_total_end - t_start).count();
+
     last_result_ = CommandResult{true, ""};
 
     std::cout << "[AWG Thread] Batch " << data.batch_id << " uploaded successfully" << std::endl;
     std::cout << "[AWG Thread]   Start index: " << batch_start_indices_[data.batch_id] << std::endl;
     std::cout << "[AWG Thread]   Total batches: " << batch_ids_.size() << std::endl;
     std::cout << "[AWG Thread]   Total timeline length: " << max_timestep_index_ << std::endl;
+    std::cout << "[AWG Thread] ───────────────────────────────────────" << std::endl;
+    std::cout << "[AWG Thread] AWG Thread Timing:" << std::endl;
+    std::cout << "[AWG Thread]   Validation:        " << validation_us << " μs" << std::endl;
+    std::cout << "[AWG Thread]   GPU copy:          " << gpu_us << " μs" << std::endl;
+    std::cout << "[AWG Thread]   Metadata update:   " << metadata_us << " μs" << std::endl;
+    std::cout << "[AWG Thread]   Total (AWG side):  " << total_us << " μs" << std::endl;
+    std::cout << "[AWG Thread] ───────────────────────────────────────" << std::endl;
     return true;
 }
 

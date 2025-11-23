@@ -23,6 +23,12 @@ struct GPUBuffers {
     float* d_batch_amplitudes;    // Amplitudes [timestep][channel][tone]
     float* d_batch_offset_phases; // Offset phases [timestep][channel][tone]
 
+    // Temporary buffers for compact data (strided copy optimization)
+    // Used when client sends num_tones < AOD_MAX_TONES
+    float* d_temp_frequencies;    // Same size as batch arrays
+    float* d_temp_amplitudes;
+    float* d_temp_offset_phases;
+
     // Pinned host memory (CPU, page-locked for fast transfer)
     int16_t* h_samples_pinned;    // For DMA transfers to AWG
 
@@ -49,6 +55,9 @@ struct GPUBuffers {
           d_batch_frequencies(nullptr),
           d_batch_amplitudes(nullptr),
           d_batch_offset_phases(nullptr),
+          d_temp_frequencies(nullptr),
+          d_temp_amplitudes(nullptr),
+          d_temp_offset_phases(nullptr),
           h_samples_pinned(nullptr),
           num_chunks(0),
           num_channels(0),
