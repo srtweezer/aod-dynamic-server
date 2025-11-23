@@ -16,13 +16,16 @@ else()
         "Then edit config.cmake with your hardware parameters.")
 endif()
 
+# Set CUDA architecture BEFORE project() command (Ada Lovelace = 86)
+# This must be set before enabling CUDA language
+set(CMAKE_CUDA_ARCHITECTURES 86)
+
 # Enable C++ and CUDA (CUDA is required for GPU waveform generation)
 project(aod-dynamic-server LANGUAGES CXX CUDA)
 
-# Set CUDA standard and architecture
+# Set CUDA standard
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-set(CMAKE_CUDA_ARCHITECTURES 86)
 
 message(STATUS "CUDA support enabled (required)")
 
@@ -31,11 +34,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Set CUDA architecture (Ada Lovelace)
-set(CMAKE_CUDA_ARCHITECTURES 86)
-
 # Find required packages
-find_package(Protobuf REQUIRED)
 find_package(PkgConfig REQUIRED)
 
 # Find ZeroMQ
@@ -81,9 +80,9 @@ configure_file(
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 include_directories(${ZMQ_INCLUDE_DIRS})
 include_directories(${SPECTRUM_INCLUDE_DIR})
+include_directories(${CMAKE_SOURCE_DIR}/external/nlohmann)
 
 # Add subdirectories
-add_subdirectory(proto)
 add_subdirectory(src)
 
 # Print configuration summary
@@ -91,7 +90,6 @@ message(STATUS "")
 message(STATUS "AOD Dynamic Server Configuration:")
 message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  CUDA Architectures: ${CMAKE_CUDA_ARCHITECTURES}")
-message(STATUS "  Protobuf version: ${Protobuf_VERSION}")
 message(STATUS "  ZeroMQ found: ${ZMQ_FOUND}")
 message(STATUS "  Spectrum SDK found: ${SPECTRUM_FOUND}")
 message(STATUS "")

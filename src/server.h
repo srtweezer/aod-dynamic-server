@@ -2,15 +2,19 @@
 #define AOD_SERVER_H
 
 #include <config.h>
-#include "aod_server.pb.h"
 #include <zmq.hpp>
+#include <nlohmann/json.hpp>
 #include <memory>
 #include <atomic>
+#include <string>
 
 namespace aod {
 
 // Forward declaration
 class AWGInterface;
+
+// Use json type alias
+using json = nlohmann::json;
 
 class AODServer {
 public:
@@ -30,14 +34,11 @@ public:
     bool isRunning() const { return running_; }
 
 private:
-    // Handle incoming request
-    Response handleRequest(const Request& request);
-
-    // Command handlers
-    Response handlePing(const PingRequest& request);
-    Response handleInitialize(const InitializeRequest& request);
-    Response handleStop(const StopRequest& request);
-    Response handleWaveformBatch(const WaveformBatchRequest& request);
+    // Command handlers (return JSON response objects)
+    json handleInitialize(const json& request);
+    json handleStart(const json& request);
+    json handleStop(const json& request);
+    json handleWaveformBatch(const json& request, zmq::socket_t& socket);
 
     // ZMQ context and socket
     std::unique_ptr<zmq::context_t> context_;

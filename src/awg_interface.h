@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <condition_variable>
+#include <unordered_map>
 
 #include <spectrum/dlltyp.h>
 #include <spectrum/regs.h>
@@ -36,40 +37,29 @@ enum class AWGCommandType {
     WAVEFORM_BATCH,
 };
 
-// Single waveform with interpolated tone parameters
-struct WaveformData {
-    int32_t delay;             // In WAVEFORM_TIMESTEP units (from trigger or previous waveform)
-    int32_t duration;          // In WAVEFORM_TIMESTEP units
-    int32_t num_tones;
-    int32_t num_steps;
-
-    std::vector<int32_t> time_steps;      // Size: num_steps (interpolation x-coordinates)
-    std::vector<float> frequencies;       // Size: num_steps * num_channels * num_tones
-    std::vector<float> amplitudes;        // Size: num_steps * num_channels * num_tones
-    std::vector<float> offset_phases;     // Size: num_steps * num_channels * num_tones
-};
-
-// Batch of waveforms
-struct WaveformBatch {
-    int trigger_type;                     // TriggerType enum from protobuf
-    std::vector<WaveformData> waveforms;
-    int32_t batch_id;                     // Unique ID
-};
-
 // Waveform command structure
 struct WaveformCommand {
     AWGCommandType type;
 
-    // Command-specific data
+    // Command-specific data structures
     struct InitializeData {
-        std::vector<int32> amplitudes_mv;  // mV for each active channel
+        std::vector<int32_t> amplitudes_mv;  // mV for each active channel
     };
 
     struct WaveformBatchData {
-        WaveformBatch batch;
+        // Pre-flattened timeline arrays from client (pointers into ZMQ buffers)
+        int batch_id;                    // Client-provided batch ID (for ordering)
+        int num_timesteps;               // Number of timesteps in this batch
+        int num_tones;                   // Actual number of tones used (can be < AOD_MAX_TONES)
+        std::string trigger_type;        // "software" or "external"
+        int32_t* h_timesteps;            // Size: num_timesteps
+        uint8_t* h_do_generate;          // Size: num_timesteps
+        float* h_frequencies;            // Size: num_timesteps * num_channels * num_tones (flattened)
+        float* h_amplitudes;             // Size: num_timesteps * num_channels * num_tones
+        float* h_offset_phases;          // Size: num_timesteps * num_channels * num_tones
     };
 
-    // Union of command data
+    // Shared pointers to command data
     std::shared_ptr<InitializeData> initialize_data;
     std::shared_ptr<WaveformBatchData> waveform_batch_data;
 };
@@ -124,13 +114,13 @@ private:
     void freeGPU();
 
     // Initialize AWG for FIFO streaming (called from thread)
-    bool initializeAWG(const std::vector<int32>& amplitudes_mv);
+    bool initializeAWG(const std::vector<int32_t>& amplitudes_mv);
 
     // Stop AWG output and DMA (called from thread)
     bool stopAWG();
 
-    // Store waveform batch in queue (called from thread)
-    bool storeBatch(const WaveformBatch& batch);
+    // Upload waveform batch directly to GPU (called from thread)
+    bool uploadBatchToGPU(const WaveformCommand::WaveformBatchData& data);
 
     // Zero the software buffer
     void zeroBuffer();
@@ -170,11 +160,14 @@ private:
     // GPU buffers
     GPUBuffers gpu_buffers_;
 
-    // Waveform batch queue
-    std::unique_ptr<WaveformBatch[]> batch_queue_;  // Fixed-size array allocated in constructor
-    std::atomic<int> num_batches_;                  // Current number of queued batches
-    std::atomic<int> next_batch_id_;                // For generating unique batch IDs
-    int max_batches_;                                // Size of batch_queue_ array
+    // Batch metadata tracking (for appending and playback order)
+    std::vector<int> batch_ids_;                              // Sorted list of batch IDs for playback order
+    std::unordered_map<int, std::string> batch_trigger_types_; // batch_id -> trigger type
+    std::unordered_map<int, int> batch_start_indices_;         // batch_id -> start index in GPU arrays
+    std::unordered_map<int, int> batch_lengths_;               // batch_id -> length in timesteps
+
+    // Maximum index used in GPU timeline arrays (for appending)
+    int max_timestep_index_;
 };
 
 } // namespace aod

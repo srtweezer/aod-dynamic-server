@@ -1,194 +1,167 @@
 # AOD Dynamic Server API Documentation
 
-This document describes the Protocol Buffer API for communicating with the AOD Dynamic Server.
+This document describes the JSON-based API for communicating with the AOD Dynamic Server using zero-copy ZeroMQ messaging.
 
 ## Communication Protocol
 
 - **Transport**: ZeroMQ REQ-REP pattern
-- **Serialization**: Protocol Buffers (proto3)
+- **Serialization**: JSON (metadata) + raw binary arrays (waveform data)
 - **Default Port**: Configured at compile-time in `config.cmake` (default: 5555)
 - **Response Time**: Commands are synchronous with 1-second timeout
+- **Zero-Copy**: Waveform data transferred as raw NumPy arrays without serialization overhead
 
 ## Message Structure
 
-All communication uses two top-level messages:
+### Simple Commands (INITIALIZE, START, STOP)
 
-### Request (Client → Server)
+**Single-part ZMQ message:**
+- Part 0: JSON metadata
 
-```protobuf
-message Request {
-  oneof command {
-    PingRequest ping = 1;
-    InitializeRequest initialize = 2;
-    StopRequest stop = 3;
-    WaveformBatchRequest waveform_batch = 4;
-  }
+### WAVEFORM_BATCH Command
+
+**Multi-part ZMQ message:**
+- Part 0: JSON metadata
+- Part 1: timesteps array (int32, binary)
+- Part 2: do_generate array (uint8, binary)
+- Part 3: frequencies array (float32, binary, flattened)
+- Part 4: amplitudes array (float32, binary, flattened)
+- Part 5: offset_phases array (float32, binary, flattened)
+
+### Response Format
+
+All responses are single-part JSON messages:
+
+```json
+{
+  "success": true,
+  "error_message": "",
+  "batch_id": 123  // Only for WAVEFORM_BATCH
 }
-```
-
-### Response (Server → Client)
-
-```protobuf
-message Response {
-  oneof result {
-    PingResponse ping = 1;
-    InitializeResponse initialize = 2;
-    StopResponse stop = 3;
-    WaveformBatchResponse waveform_batch = 4;
-  }
-}
-```
-
-## Available Commands
-
-### Ping
-
-Health check command to verify server connectivity and measure round-trip time.
-
-#### Request
-
-```protobuf
-message PingRequest {
-  // Empty - no parameters required
-}
-```
-
-#### Response
-
-```protobuf
-message PingResponse {
-  int64 timestamp_ns = 1;  // Server timestamp in nanoseconds since epoch
-}
-```
-
-#### Example Usage (Python)
-
-```python
-import zmq
-import aod_server_pb2
-
-# Connect to server
-context = zmq.Context()
-socket = context.socket(zmq.REQ)
-socket.connect("tcp://localhost:5555")
-
-# Create ping request
-request = aod_server_pb2.Request()
-request.ping.CopyFrom(aod_server_pb2.PingRequest())
-
-# Send request
-socket.send(request.SerializeToString())
-
-# Receive response
-response_data = socket.recv()
-response = aod_server_pb2.Response()
-response.ParseFromString(response_data)
-
-# Extract timestamp
-timestamp_ns = response.ping.timestamp_ns
-print(f"Server timestamp: {timestamp_ns} ns")
 ```
 
 ---
 
-### Initialize
+## Available Commands
+
+### INITIALIZE
 
 Configure AWG hardware with channel amplitudes and prepare for waveform generation.
 
 #### Request
 
-```protobuf
-message InitializeRequest {
-  repeated int32 channel_amplitudes_mv = 1;  // Amplitude in mV for each active channel
+```json
+{
+  "command": "INITIALIZE",
+  "amplitudes_mv": [1000, 1000, 1000, 1000]
 }
 ```
 
 **Parameters:**
-- `channel_amplitudes_mv`: Array of amplitudes in millivolts
+- `amplitudes_mv`: Array of amplitudes in millivolts (integers)
   - Size must match the number of active channels in `AWG_CHANNEL_MASK` (compile-time config)
-  - Example: If `AWG_CHANNEL_MASK = 0b0011` (2 channels), provide 2 amplitudes
-  - Values are applied in channel order (e.g., [amp_ch0, amp_ch1])
+  - Example: If `AWG_CHANNEL_MASK = 0b1111` (4 channels), provide 4 amplitudes
+  - Values are applied in channel order
 
 #### Response
 
-```protobuf
-message InitializeResponse {
-  bool success = 1;
-  string error_message = 2;  // Empty if success=true, detailed error otherwise
+```json
+{
+  "success": true,
+  "error_message": ""
 }
 ```
 
 #### What It Does
 
-1. Sets AWG mode to FIFO single replay (`SPC_REP_FIFO_SINGLE`)
+1. Sets AWG mode to FIFO single replay
 2. Enables channels based on compile-time `AWG_CHANNEL_MASK`
-3. Configures each active channel:
-   - Sets amplitude (in mV)
-   - Sets filter to 0 (no filter)
-   - Enables output
+3. Configures each active channel with amplitude, filter, and enables output
 4. Configures clock (internal PLL) and sample rate
 5. Sets software trigger
-6. Allocates and zeros 64 MB DMA buffer
-7. Defines DMA transfer with notify size
+6. Allocates DMA buffer and initializes GPU arrays
 
 **State Transition:** CONNECTED → INITIALIZED
 
-**Re-initialization:** If already initialized, updates amplitudes and zeros buffer without reallocating.
+**Re-initialization:** If already initialized, updates amplitudes and zeros buffers without reallocating.
 
 #### Example Usage (Python)
 
 ```python
 import zmq
-import aod_server_pb2
+import json
 
+# Connect to server
 context = zmq.Context()
 socket = context.socket(zmq.REQ)
 socket.connect("tcp://localhost:8037")
 
-# Initialize with 4 channel amplitudes (for mask 0b1111)
-request = aod_server_pb2.Request()
-init_req = request.initialize
-init_req.channel_amplitudes_mv.extend([500, 800, 1000, 750])  # mV
+# Send Initialize command
+request = {
+    "command": "INITIALIZE",
+    "amplitudes_mv": [500, 800, 1000, 750]
+}
+socket.send_json(request)
 
-socket.send(request.SerializeToString())
-response_data = socket.recv()
+# Receive response
+response = socket.recv_json()
 
-response = aod_server_pb2.Response()
-response.ParseFromString(response_data)
-
-if response.initialize.success:
+if response["success"]:
     print("AWG initialized successfully")
 else:
-    print(f"Error: {response.initialize.error_message}")
+    print(f"Error: {response['error_message']}")
 ```
 
 #### Common Errors
 
 - **"Expected N amplitudes, got M"**: Amplitude count doesn't match active channels
-- **"AWG setup failed: ..."**: Spectrum SDK configuration error (check hardware)
-- **"Failed to allocate buffer"**: Insufficient memory for DMA buffer
-- **"Command timed out"**: Initialization took longer than 1 second
+- **"AWG setup failed: ..."**: Spectrum SDK configuration error
+- **"Failed to allocate buffer"**: Insufficient memory
 
 ---
 
-### Stop
+### START
 
-Stop AWG output, halt DMA transfer, and zero the software buffer.
+Start AWG output and begin FIFO streaming (future implementation).
 
 #### Request
 
-```protobuf
-message StopRequest {
-  // Empty - no parameters required
+```json
+{
+  "command": "START"
 }
 ```
 
 #### Response
 
-```protobuf
-message StopResponse {
-  bool success = 1;
-  string error_message = 2;
+```json
+{
+  "success": false,
+  "error_message": "START not yet implemented"
+}
+```
+
+**Note:** Currently returns not implemented. Future implementation will begin streaming waveforms from GPU to AWG hardware.
+
+---
+
+### STOP
+
+Stop AWG output, halt DMA transfer, and clear waveform data.
+
+#### Request
+
+```json
+{
+  "command": "STOP"
+}
+```
+
+#### Response
+
+```json
+{
+  "success": true,
+  "error_message": ""
 }
 ```
 
@@ -196,237 +169,253 @@ message StopResponse {
 
 1. Stops card output (`M2CMD_CARD_STOP`)
 2. Stops DMA transfer (`M2CMD_DATA_STOPDMA`)
-3. Zeros the software and GPU buffers
-4. **Clears the waveform batch queue** - all queued batches are discarded
+3. Zeros software and GPU buffers
+4. **Resets timeline** - clears all waveform data from GPU
 5. **Does NOT de-initialize** - AWG stays in INITIALIZED state
 
-**Note:** If AWG is not running (CONNECTED state), Stop is a no-op and returns success. This makes Stop idempotent and safe to call multiple times.
+**Note:** Stop is idempotent - safe to call multiple times even if not running.
 
 #### Example Usage (Python)
 
 ```python
-# Send Stop command
-request = aod_server_pb2.Request()
-request.stop.CopyFrom(aod_server_pb2.StopRequest())
+request = {"command": "STOP"}
+socket.send_json(request)
+response = socket.recv_json()
 
-socket.send(request.SerializeToString())
-response_data = socket.recv()
-
-response = aod_server_pb2.Response()
-response.ParseFromString(response_data)
-
-if response.stop.success:
+if response["success"]:
     print("AWG stopped successfully")
-else:
-    print(f"Error: {response.stop.error_message}")
 ```
-
-#### Common Errors
-
-- **"Failed to stop AWG: ..."**: Spectrum SDK error during stop (rare)
 
 ---
 
-### WaveformBatch
+### WAVEFORM_BATCH
 
-Queue a batch of waveforms with interpolated tone parameters for execution.
+Upload a pre-flattened timeline of waveform data directly to GPU.
 
-#### Request
+#### Message Format
 
-```protobuf
-enum TriggerType {
-  TRIGGER_SOFTWARE = 0;
-  TRIGGER_EXTERNAL = 1;
-}
+**Part 0 - JSON Metadata:**
 
-message Waveform {
-  int32 delay = 1;                 // Delay in WAVEFORM_TIMESTEP units
-  int32 duration = 2;              // Duration in WAVEFORM_TIMESTEP units
-  int32 num_tones = 3;
-  int32 num_steps = 4;             // Number of interpolation points
-  repeated int32 time_steps = 5;   // Interpolation x-coordinates (in WAVEFORM_TIMESTEP units)
-  repeated float frequencies = 6;   // Flattened: [step][channel][tone], in Hz
-  repeated float amplitudes = 7;    // Flattened: [step][channel][tone]
-  repeated float offset_phases = 8; // Flattened: [step][channel][tone]
-}
-
-message WaveformBatchRequest {
-  TriggerType trigger_type = 1;
-  repeated Waveform waveforms = 2;
+```json
+{
+  "command": "WAVEFORM_BATCH",
+  "batch_id": 100,
+  "trigger_type": "software",
+  "num_timesteps": 1024,
+  "num_tones": 64
 }
 ```
 
-#### Response
+**Note:** `num_channels` is NOT sent - server uses compile-time `AWG_CHANNEL_MASK` configuration
 
-```protobuf
-message WaveformBatchResponse {
-  bool success = 1;
-  string error_message = 2;
-  int32 batch_id = 3;  // Unique ID for this batch
-}
-```
+**Part 1 - timesteps (int32):**
+- Shape: `[num_timesteps]`
+- Units: WAVEFORM_TIMESTEP (compile-time config, typically 512 samples)
+- Description: Time coordinate for each timestep
+
+**Part 2 - do_generate (uint8):**
+- Shape: `[num_timesteps]`
+- Values: 0 (delay period) or 1 (generate waveform)
+- Description: Flag indicating whether to generate waveform at this timestep
+
+**Part 3 - frequencies (float32):**
+- Shape: `[num_timesteps, num_channels, num_tones]` (flattened)
+- Units: Hz
+- Description: Frequency for each tone at each timestep
+- Note: `num_tones` is actual tones used (can be < AOD_MAX_TONES). Server pads to AOD_MAX_TONES with zeros.
+
+**Part 4 - amplitudes (float32):**
+- Shape: `[num_timesteps, num_channels, num_tones]` (flattened)
+- Units: Normalized (0.0 to 1.0 typical)
+- Description: Amplitude for each tone at each timestep
+
+**Part 5 - offset_phases (float32):**
+- Shape: `[num_timesteps, num_channels, num_tones]` (flattened)
+- Units: Radians
+- Description: Phase offset for each tone at each timestep
 
 #### Parameters
 
-**Batch-level:**
-- `trigger_type`: SOFTWARE (0) or EXTERNAL (1)
-- `waveforms`: Array of waveforms to execute sequentially
+**Metadata:**
+- `batch_id`: Integer identifier for this batch (client-provided, for ordering)
+- `trigger_type`: "software" or "external"
+- `num_timesteps`: Number of timesteps in this batch
+- `num_tones`: Actual number of tones used (1 to AOD_MAX_TONES)
 
-**Per-waveform:**
-- `delay`: Delay in WAVEFORM_TIMESTEP units
-  - **First waveform**: delay from trigger event
-  - **Subsequent waveforms**: delay from end of previous waveform
-- `duration`: Waveform length in WAVEFORM_TIMESTEP units
-- `num_tones`: Number of frequency tones
-- `num_steps`: Number of interpolation points for tone parameters
-- `time_steps`: Interpolation time coordinates (size: num_steps)
-  - Values in WAVEFORM_TIMESTEP units relative to waveform start
-  - Defines when each interpolation point occurs
+**Arrays:**
+- All arrays must be **contiguous C-order** NumPy arrays
+- Flattened arrays use row-major indexing: `[timestep][channel][tone]`
+- Index formula: `timestep * num_channels * num_tones + channel * num_tones + tone`
 
-**Tone parameter arrays:**
-- All have size: `num_steps × num_channels × num_tones`
-- Indexing: `[step × num_channels × num_tones + channel × num_tones + tone]`
-- `frequencies`: In Hz (actual frequency, e.g., 80.5e6 for 80.5 MHz)
-- `amplitudes`: Normalized amplitude (typically 0.0 to 1.0)
-- `offset_phases`: Phase offset in radians
+#### Array Flattening Details
+
+The client must flatten waveforms into a **global timeline** that accounts for:
+
+1. **Delays**: Timesteps where `do_generate = 0`
+2. **Waveform data**: Timesteps where `do_generate = 1`
+3. **Zero-padding**: Unused tone slots (if actual tones < num_tones)
+
+**Timeline Structure:**
+```
+[delay 0...delay_0] → [waveform_0 data] → [delay 1] → [waveform_1 data] → ...
+```
+
+Each waveform's data is interpolated across its duration, with one timestep per interpolation point.
+
+#### Response
+
+```json
+{
+  "success": true,
+  "error_message": "",
+  "batch_id": 123
+}
+```
+
+The `batch_id` is a unique sequential integer for tracking.
 
 #### What It Does
 
-1. Validates all array sizes match declared dimensions
-2. Stores batch in fixed-size queue (max: MAX_WAVEFORM_BATCHES from config)
-3. Appends to existing queue (batches execute in order)
-4. Returns unique batch_id for tracking
-5. **Does NOT execute** - batches are stored for future Start command
+1. Receives and validates array sizes based on client's `num_tones`
+2. Checks for duplicate `batch_id` (returns error if duplicate)
+3. **Appends** batch data to GPU timeline at current end position
+4. **Strided copy**: Pads client's `num_tones` to `AOD_MAX_TONES` with zeros in GPU
+5. **Zero-copy transfer**: Data goes directly from ZMQ buffers to GPU memory
+6. Stores batch metadata for playback ordering
+7. Keeps batch_ids in sorted order for sequential playback
 
-**State**: No state change (stays INITIALIZED)
+**State**: Stays INITIALIZED (does not start streaming)
 
-**Queue behavior**: Batches are appended, not replaced
+**Batch Ordering**: Batches are played in **batch_id order** (numerically sorted), not order received
+
+**Capacity**: Total timeline length across all batches cannot exceed MAX_WAVEFORM_TIMESTEPS
+
+**Performance**: Zero-copy design + direct GPU upload + server-side tone padding optimization
+
+#### Batch Management Details
+
+**Appending Behavior:**
+- Each `WAVEFORM_BATCH` command **appends** data to GPU timeline
+- Batches sent with `batch_id` 100, 200, 300 will play in that order
+- Can send batches out of order: 300, 100, 200 → plays as 100, 200, 300
+- Timeline is cumulative: batch at index 0, next at index (prev_length), etc.
+
+**Duplicate Handling:**
+- Sending same `batch_id` twice returns error
+- Use `STOP` to clear all batches and start fresh
+
+**Capacity:**
+- MAX_WAVEFORM_TIMESTEPS applies to **total** of all batches
+- Example: 3 batches of 1000 timesteps each = 3000 total (OK if limit is 16384)
 
 #### Example Usage (Python)
 
 ```python
-import aod_server_pb2
+import numpy as np
+import zmq
 
-# Create batch request
-request = aod_server_pb2.Request()
-batch_req = request.waveform_batch
+context = zmq.Context()
+socket = context.socket(zmq.REQ)
+socket.connect("tcp://localhost:8037")
 
-batch_req.trigger_type = aod_server_pb2.TRIGGER_SOFTWARE
+# Client-side timeline flattening (example with 2 waveforms)
+# Waveform 1: 10 timestep delay, then 100 timesteps of data
+# Waveform 2: 5 timestep delay, then 50 timesteps of data
+num_timesteps = 10 + 100 + 5 + 50  # 165 total
+num_channels = 4  # Must match server's AWG_CHANNEL_MASK config
+num_tones = 2     # Actual tones used (can be < AOD_MAX_TONES = 128)
 
-# Add first waveform
-wf = batch_req.waveforms.add()
-wf.delay = 10        # 10 timesteps after trigger
-wf.duration = 100
-wf.num_tones = 2
-wf.num_steps = 3
+# Pre-allocate arrays
+timesteps = np.zeros(num_timesteps, dtype=np.int32)
+do_generate = np.zeros(num_timesteps, dtype=np.uint8)
+frequencies = np.zeros((num_timesteps, num_channels, num_tones), dtype=np.float32)
+amplitudes = np.zeros((num_timesteps, num_channels, num_tones), dtype=np.float32)
+phases = np.zeros((num_timesteps, num_channels, num_tones), dtype=np.float32)
 
-# Define interpolation times (relative to waveform start)
-wf.time_steps.extend([0, 50, 100])
+# Fill in waveform 1 delay (timesteps 0-9)
+idx = 0
+for d in range(10):
+    timesteps[idx] = d
+    do_generate[idx] = 0  # Delay, no generation
+    idx += 1
 
-# Define tone parameters (flattened)
-# For 4 channels, 2 tones, 3 steps: size = 3*4*2 = 24
-num_channels = 4
-size = wf.num_steps * num_channels * wf.num_tones  # 24
-
-# Example: linearly varying frequency (in Hz)
-frequencies = []
-for step in range(wf.num_steps):
+# Fill in waveform 1 data (timesteps 10-109)
+for step in range(100):
+    timesteps[idx] = step
+    do_generate[idx] = 1  # Generate waveform
+    # Fill frequencies, amplitudes, phases for all channels/tones
     for ch in range(num_channels):
-        for tone in range(wf.num_tones):
-            # AOD frequencies typically 54-82 MHz
-            freq_hz = 70e6 + 1e6 * tone + 0.1e6 * step  # Hz
-            frequencies.append(freq_hz)
+        for tone in range(num_tones):  # Use actual num_tones
+            frequencies[idx, ch, tone] = 70e6 + 1e6 * tone  # Hz
+            amplitudes[idx, ch, tone] = 1.0
+            phases[idx, ch, tone] = 0.0
+    idx += 1
 
-wf.frequencies.extend(frequencies)
-wf.amplitudes.extend([1.0] * size)  # Constant amplitude
-wf.offset_phases.extend([0.0] * size)  # Zero phase
+# Fill in waveform 2 delay (timesteps 110-114)
+for d in range(5):
+    timesteps[idx] = d
+    do_generate[idx] = 0
+    idx += 1
 
-# Send request
-socket.send(request.SerializeToString())
-response_data = socket.recv()
+# Fill in waveform 2 data (timesteps 115-164)
+for step in range(50):
+    timesteps[idx] = step
+    do_generate[idx] = 1
+    for ch in range(num_channels):
+        for tone in range(num_tones):
+            frequencies[idx, ch, tone] = 72e6 + 1e6 * tone
+            amplitudes[idx, ch, tone] = 0.8
+            phases[idx, ch, tone] = 0.0
+    idx += 1
 
-response = aod_server_pb2.Response()
-response.ParseFromString(response_data)
+# Flatten 3D arrays for transmission
+freq_flat = frequencies.ravel()
+amp_flat = amplitudes.ravel()
+phase_flat = phases.ravel()
 
-if response.waveform_batch.success:
-    print(f"Batch queued with ID: {response.waveform_batch.batch_id}")
+# Send metadata (client provides batch_id for ordering)
+metadata = {
+    "command": "WAVEFORM_BATCH",
+    "batch_id": 100,  # Client controls batch order
+    "trigger_type": "software",
+    "num_timesteps": num_timesteps,
+    "num_tones": num_tones  # Actual tones used (not num_channels!)
+}
+socket.send_json(metadata, zmq.SNDMORE)
+
+# Send arrays (zero-copy)
+socket.send(timesteps, copy=False, zmq.SNDMORE)
+socket.send(do_generate, copy=False, zmq.SNDMORE)
+socket.send(freq_flat, copy=False, zmq.SNDMORE)
+socket.send(amp_flat, copy=False, zmq.SNDMORE)
+socket.send(phase_flat, copy=False)
+
+# Receive response
+response = socket.recv_json()
+
+if response["success"]:
+    print(f"Waveform uploaded with batch_id: {response['batch_id']}")
 else:
-    print(f"Error: {response.waveform_batch.error_message}")
+    print(f"Error: {response['error_message']}")
 ```
 
 #### Common Errors
 
-- **"Batch queue full (16 batches)"**: Too many batches queued, need to execute/clear them
-- **"Waveform N: frequencies size mismatch"**: Array size doesn't match num_steps × num_channels × num_tones
-- **"Waveform N: time_steps size mismatch"**: time_steps array size doesn't match num_steps
+- **"Duplicate batch_id: N"**: Batch with this ID already uploaded (use different ID)
+- **"Total timeline would exceed MAX_WAVEFORM_TIMESTEPS"**: All batches together exceed limit
+- **"Array size mismatch"**: Array dimensions don't match metadata
+- **"Invalid num_tones"**: Must be between 1 and AOD_MAX_TONES
+- **"Failed to receive array part N"**: Network error receiving array data
 
-#### Notes
+#### Performance Notes
 
-- **Timing units**: All delays and durations are in **WAVEFORM_TIMESTEP units** (compile-time config, typically 512 samples)
-  - Time resolution: 1 WAVEFORM_TIMESTEP = WAVEFORM_TIMESTEP / sample_rate seconds
-  - Example: With 512 samples/timestep and 625 MHz sample rate: 1 timestep ≈ 0.82 μs
-- **Delay interpretation**:
-  - First waveform delay: time from trigger to waveform start
-  - Subsequent waveform delays: time from previous waveform end to next waveform start
-  - Minimum delay: 0 (back-to-back waveforms allowed)
-- **Frequencies** are in **Hz** (e.g., 80.5e6 for 80.5 MHz AOD frequency)
-- **Maximum batches** in queue: MAX_WAVEFORM_BATCHES (compile-time config, default: 16)
+- **Zero-copy**: Arrays sent via `socket.send(array, copy=False)` avoid Python serialization
+- **Direct GPU transfer**: Data copied from ZMQ buffers straight to GPU memory
+- **No intermediate storage**: No CPU arrays stored server-side
+- **Throughput**: Limited by network bandwidth, not serialization overhead
+- **Typical latency**: < 10ms for small batches on localhost, scales with array size
 
 ---
-
-## Future Commands (Planned)
-
-The following commands are planned for future implementation:
-
-### Start
-
-Execute queued waveform batches and begin FIFO streaming.
-
-```protobuf
-message GenerateWaveformRequest {
-  // To be defined
-  // - Sequence of tweezer operations
-  // - Timing parameters
-  // - Frequency/amplitude specifications
-}
-
-message GenerateWaveformResponse {
-  bool success = 1;
-  string error_message = 2;
-}
-```
-
-### Start
-
-Start AWG output and begin FIFO streaming.
-
-```protobuf
-message StartRequest {
-  // To be defined
-}
-
-message StartResponse {
-  bool success = 1;
-  string error_message = 2;
-}
-```
-
-### Get Status
-
-Query server and AWG status.
-
-```protobuf
-message GetStatusRequest {
-  // Empty
-}
-
-message GetStatusResponse {
-  bool awg_connected = 1;
-  bool gpu_available = 2;
-  int32 buffer_fill_percent = 3;
-  // More status fields...
-}
-```
 
 ## AWG State Machine
 
@@ -446,143 +435,260 @@ DISCONNECTED → CONNECTED → INITIALIZED → STREAMING
 
 **Transitions:**
 - `start()` (server startup): DISCONNECTED → CONNECTED
-- `Initialize`: CONNECTED → INITIALIZED (or INITIALIZED → INITIALIZED on re-init)
-- `Stop`: Stops output but keeps INITIALIZED state (idempotent)
-- `Start` (future): INITIALIZED → STREAMING
-- `disconnectHardware()`: Any → DISCONNECTED
+- `INITIALIZE`: CONNECTED → INITIALIZED
+- `STOP`: Clears waveforms but stays INITIALIZED
+- `START` (future): INITIALIZED → STREAMING
+
+---
 
 ## Error Handling
 
-All commands return synchronous responses with detailed error messages.
+All commands return JSON responses with `success` and `error_message` fields.
 
-**Response Pattern:**
-```protobuf
-message SomeResponse {
-  bool success = 1;
-  string error_message = 2;  // Populated on failure
+**Example Error Response:**
+```json
+{
+  "success": false,
+  "error_message": "Array size mismatch: expected 262144 floats, got 131072"
 }
 ```
 
-**Error Sources:**
-- **Validation errors**: Invalid parameters (e.g., wrong amplitude count)
-- **Spectrum SDK errors**: Hardware configuration failures (includes SDK error text)
-- **State errors**: Command called in wrong state (e.g., Stop when not initialized)
-- **Timeout errors**: Command took longer than 1 second to complete
-- **Allocation errors**: Failed to allocate buffers
+**Error Categories:**
+- **Validation errors**: Invalid parameters or array sizes
+- **Spectrum SDK errors**: Hardware configuration failures
+- **State errors**: Command called in wrong state
+- **Timeout errors**: Command took longer than 1 second
+- **Allocation errors**: Failed to allocate GPU memory
 
-**Example Error Messages:**
-- `"Expected 4 amplitudes for active channels, got 2"`
-- `"AWG setup failed: Call: (SPC_CARDMODE, ...) -> invalid mode"`
-- `"AWG not initialized or streaming (current state: 1)"`
-- `"Command timed out after 1000ms"`
+---
 
-## Client Libraries
-
-### Python
-
-Generate Python bindings:
-
-```bash
-protoc --python_out=. proto/aod_server.proto
-```
-
-Install dependencies:
-
-```bash
-pip install pyzmq protobuf
-```
-
-### C++
-
-The generated C++ code is automatically compiled as part of the server build. To use it in a separate C++ client:
-
-1. Link against `aod_proto` library
-2. Include `aod_server.pb.h`
-3. Use `zmq::socket_t` with `zmq::socket_type::req`
-
-### Other Languages
-
-Protocol Buffers and ZeroMQ are available for many languages. Generate bindings using:
-
-```bash
-protoc --[language]_out=. proto/aod_server.proto
-```
-
-Supported languages include: Java, Go, Rust, JavaScript, Ruby, PHP, C#, etc.
-
-## Connection Examples
+## Client Implementation Guide
 
 ### Python Client Template
 
 ```python
 import zmq
-import aod_server_pb2
+import numpy as np
+import json
 
 class AODClient:
-    def __init__(self, host="localhost", port=5555):
+    def __init__(self, host="localhost", port=8037):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
         self.socket.connect(f"tcp://{host}:{port}")
+        self.num_channels = 4  # From server config
+        self.max_tones = 128   # From server config (AOD_MAX_TONES)
 
-    def ping(self):
-        request = aod_server_pb2.Request()
-        request.ping.CopyFrom(aod_server_pb2.PingRequest())
-        self.socket.send(request.SerializeToString())
+    def _send_command(self, metadata, arrays=None):
+        """Send command with optional arrays (zero-copy)"""
+        if arrays:
+            self.socket.send_json(metadata, zmq.SNDMORE)
+            for i, arr in enumerate(arrays):
+                arr_contig = np.ascontiguousarray(arr)
+                flags = 0 if i == len(arrays)-1 else zmq.SNDMORE
+                self.socket.send(arr_contig, copy=False, flags=flags)
+        else:
+            self.socket.send_json(metadata)
 
-        response_data = self.socket.recv()
-        response = aod_server_pb2.Response()
-        response.ParseFromString(response_data)
+        return self.socket.recv_json()
 
-        return response.ping.timestamp_ns
+    def initialize(self, amplitudes_mv):
+        """Initialize AWG with channel amplitudes"""
+        response = self._send_command({
+            'command': 'INITIALIZE',
+            'amplitudes_mv': list(amplitudes_mv)
+        })
+        if not response['success']:
+            raise RuntimeError(response['error_message'])
+
+    def start(self):
+        """Start AWG streaming (future implementation)"""
+        response = self._send_command({'command': 'START'})
+        if not response['success']:
+            raise RuntimeError(response['error_message'])
+
+    def stop(self):
+        """Stop AWG output"""
+        response = self._send_command({'command': 'STOP'})
+        if not response['success']:
+            raise RuntimeError(response['error_message'])
+
+    def send_waveform_batch(self, batch_id, timesteps, do_generate,
+                           frequencies, amplitudes, phases,
+                           trigger_type='software'):
+        """
+        Send pre-flattened waveform timeline.
+
+        Args:
+            batch_id: Integer identifier for playback ordering
+            timesteps: int32 array [num_timesteps]
+            do_generate: uint8 array [num_timesteps]
+            frequencies: float32 array [num_timesteps, num_channels, num_tones]
+            amplitudes: float32 array [num_timesteps, num_channels, num_tones]
+            phases: float32 array [num_timesteps, num_channels, num_tones]
+            trigger_type: 'software' or 'external'
+
+        Returns:
+            batch_id: Echo of provided batch_id (for confirmation)
+
+        Note: num_tones inferred from frequencies.shape[2] (actual tones used)
+              Server pads to AOD_MAX_TONES automatically
+        """
+        num_timesteps = len(timesteps)
+        num_tones = frequencies.shape[2]  # Actual tones from array shape
+
+        # Flatten 3D arrays
+        freq_flat = frequencies.ravel()
+        amp_flat = amplitudes.ravel()
+        phase_flat = phases.ravel()
+
+        response = self._send_command(
+            {
+                'command': 'WAVEFORM_BATCH',
+                'batch_id': batch_id,
+                'trigger_type': trigger_type,
+                'num_timesteps': num_timesteps,
+                'num_tones': num_tones
+            },
+            arrays=[timesteps, do_generate, freq_flat, amp_flat, phase_flat]
+        )
+
+        if not response['success']:
+            raise RuntimeError(response['error_message'])
+
+        return response['batch_id']
 
     def close(self):
+        """Close socket and context"""
         self.socket.close()
         self.context.term()
 
-# Usage
+# Usage example
 client = AODClient()
-timestamp = client.ping()
-print(f"Server responded with timestamp: {timestamp}")
+client.initialize([1000, 1000, 1000, 1000])
+
+# Send multiple waveform batches (they'll play in batch_id order)
+# ... (create timeline arrays for batch 100) ...
+client.send_waveform_batch(100, timesteps1, do_generate1,
+                           frequencies1, amplitudes1, phases1)
+
+# ... (create timeline arrays for batch 200) ...
+client.send_waveform_batch(200, timesteps2, do_generate2,
+                           frequencies2, amplitudes2, phases2)
+
+print("Uploaded 2 batches - will play in order: 100, 200")
+
+client.stop()  # Clears all batches
 client.close()
 ```
 
-## Network Configuration
+### Required Dependencies
 
-The server bind address is configured in `config.yml`:
-
-```yaml
-server:
-  port: 5555
-  bind_address: "tcp://*"  # Listen on all interfaces
+```bash
+pip install pyzmq numpy
 ```
 
-Client connection strings:
-- Local: `tcp://localhost:5555`
-- Remote: `tcp://192.168.1.100:5555`
-- Unix socket (future): `ipc:///tmp/aod-server.sock`
-
-## Performance Considerations
-
-- **Latency**: REQ-REP pattern is synchronous. Typical round-trip time < 1 ms on localhost.
-- **Throughput**: For high-frequency updates, consider batching commands (future enhancement).
-- **Timeouts**: Set appropriate ZMQ timeouts to handle server unavailability.
-
-### ZMQ Timeout Example (Python)
-
-```python
-socket.setsockopt(zmq.RCVTIMEO, 5000)  # 5 second timeout
-try:
-    response_data = socket.recv()
-except zmq.Again:
-    print("Server did not respond in time")
-```
-
-## Versioning
-
-API version: **0.1.0** (initial development)
-
-Breaking changes will increment the major version. The server will eventually include version negotiation in the protocol.
+**No protobuf required!**
 
 ---
 
-**Note**: This API is under active development. Commands and message formats may change before version 1.0.0.
+## Network Configuration
+
+Server bind address configured in `config.cmake`:
+
+```cmake
+set(SERVER_PORT 8037 CACHE STRING "ZMQ REQ-REP server port")
+set(SERVER_BIND_ADDRESS "tcp://*" CACHE STRING "ZMQ bind address")
+```
+
+**Client connection strings:**
+- Local: `tcp://localhost:8037`
+- Remote: `tcp://192.168.1.100:8037`
+
+---
+
+## Performance Characteristics
+
+### Latency
+
+- Simple commands (INITIALIZE, START, STOP): < 1 ms on localhost
+- WAVEFORM_BATCH: Depends on array size
+  - 1000 timesteps, 4 channels, 64 tones: ~5-10 ms on localhost
+  - Includes network transfer + GPU copy
+
+### Throughput
+
+- **Zero-copy benefits**: No serialization overhead for array data
+- **Direct GPU path**: Network → ZMQ buffer → GPU (single copy)
+- **Bottleneck**: Usually network bandwidth, not CPU
+- **Typical**: 100-500 MB/s on localhost, limited by ZMQ/kernel
+
+### Memory Efficiency
+
+- **Server**: No intermediate CPU storage of waveform arrays
+- **Client**: NumPy arrays sent directly from Python memory
+- **GPU**: Arrays copied once from ZMQ buffers to device memory
+
+---
+
+## Configuration Reference
+
+Key compile-time configuration parameters from `config.cmake`:
+
+```cmake
+# Maximum timesteps in global waveform batch arrays
+set(MAX_WAVEFORM_TIMESTEPS 16384)
+
+# Maximum number of simultaneous tones per channel
+set(AOD_MAX_TONES 128)
+
+# Waveform timestep (samples)
+set(WAVEFORM_TIMESTEP 512)
+
+# AWG channel mask (bitwise: bit 0 = CH0, bit 1 = CH1, etc.)
+set(AWG_CHANNEL_MASK 0b1111)  # All 4 channels
+
+# AWG sample rate (Hz)
+set(AWG_SAMPLE_RATE 625000000)  # 625 MHz
+```
+
+### Time Resolution
+
+Time resolution = `WAVEFORM_TIMESTEP / AWG_SAMPLE_RATE`
+
+Example with defaults:
+- 512 samples / 625 MHz = 0.8192 μs per timestep
+
+---
+
+## Versioning
+
+API version: **0.2.0** (zero-copy JSON implementation)
+
+**Breaking changes from 0.1.0:**
+- Removed Protocol Buffers entirely
+- Waveform data sent as pre-flattened arrays (client-side flattening)
+- New multi-part message format for WAVEFORM_BATCH
+- Simplified command structure (JSON-based)
+
+---
+
+## Migration from Protobuf API (v0.1.0)
+
+Key differences:
+
+1. **No Protobuf**: Use JSON and NumPy arrays instead
+2. **Client flattens timeline**: Server no longer builds global timeline from per-waveform data
+3. **Zero-copy arrays**: Use `socket.send(array, copy=False)` for performance
+4. **No batch queue**: Each WAVEFORM_BATCH command overwrites previous data
+5. **Direct GPU upload**: Data goes straight to GPU, no CPU storage
+
+**Migration steps:**
+1. Remove protobuf dependency
+2. Convert per-waveform data to global timeline on client
+3. Flatten arrays with delays and waveform data
+4. Send via multi-part ZMQ message
+
+---
+
+**Note**: This API is under active development. The WAVEFORM_BATCH command is implemented; START command streaming is planned.

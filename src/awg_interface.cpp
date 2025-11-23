@@ -3,6 +3,7 @@
 #include <config.h>
 #include <iostream>
 #include <cstring>
+#include <algorithm>
 
 namespace aod {
 
@@ -18,11 +19,7 @@ AWGInterface::AWGInterface()
       sw_buffer_size_(0),
       notify_size_(0),
       command_queue_(std::make_unique<ThreadSafeQueue<WaveformCommand>>()),
-      num_batches_(0),
-      next_batch_id_(1) {
-    using namespace aod::config;
-    max_batches_ = MAX_WAVEFORM_BATCHES;
-    batch_queue_ = std::make_unique<WaveformBatch[]>(max_batches_);
+      max_timestep_index_(0) {
 }
 
 AWGInterface::~AWGInterface() {
@@ -404,9 +401,13 @@ bool AWGInterface::stopAWG() {
     // Zero buffer
     zeroBuffer();
 
-    // Clear waveform batch queue
-    num_batches_ = 0;
-    std::cout << "[AWG Thread] Waveform batch queue cleared" << std::endl;
+    // Clear batch metadata
+    batch_ids_.clear();
+    batch_trigger_types_.clear();
+    batch_start_indices_.clear();
+    batch_lengths_.clear();
+    max_timestep_index_ = 0;
+    std::cout << "[AWG Thread] All batches cleared" << std::endl;
 
     // Set state to INITIALIZED (stops streaming but keeps initialization)
     state_ = AWGState::INITIALIZED;
@@ -416,65 +417,82 @@ bool AWGInterface::stopAWG() {
     return true;
 }
 
-bool AWGInterface::storeBatch(const WaveformBatch& batch) {
+bool AWGInterface::uploadBatchToGPU(const WaveformCommand::WaveformBatchData& data) {
     using namespace aod::config;
 
-    std::cout << "[AWG Thread] Storing waveform batch..." << std::endl;
+    std::cout << "[AWG Thread] Uploading batch to GPU..." << std::endl;
+    std::cout << "[AWG Thread]   Batch ID: " << data.batch_id << std::endl;
+    std::cout << "[AWG Thread]   Timesteps: " << data.num_timesteps << std::endl;
+    std::cout << "[AWG Thread]   Num tones: " << data.num_tones << std::endl;
 
-    // Check if queue is full
-    int current_batches = num_batches_.load();
-    if (current_batches >= max_batches_) {
-        std::string error = "Batch queue full (" + std::to_string(max_batches_) + " batches)";
+    // Check for duplicate batch_id
+    if (batch_trigger_types_.find(data.batch_id) != batch_trigger_types_.end()) {
+        std::string error = "Duplicate batch_id: " + std::to_string(data.batch_id);
         std::cerr << "[AWG Thread] " << error << std::endl;
         last_result_ = CommandResult{false, error};
         return false;
     }
 
-    // Validate batch data
-    int num_channels = __builtin_popcount(AWG_CHANNEL_MASK);
-
-    for (size_t i = 0; i < batch.waveforms.size(); i++) {
-        const auto& wf = batch.waveforms[i];
-
-        // Calculate expected array size
-        size_t expected_size = wf.num_steps * num_channels * wf.num_tones;
-
-        // Validate array sizes
-        if (wf.time_steps.size() != static_cast<size_t>(wf.num_steps)) {
-            std::string error = "Waveform " + std::to_string(i) + ": time_steps size mismatch";
-            last_result_ = CommandResult{false, error};
-            return false;
-        }
-
-        if (wf.frequencies.size() != expected_size) {
-            std::string error = "Waveform " + std::to_string(i) + ": frequencies size mismatch. "
-                               "Expected " + std::to_string(expected_size) + ", got " + std::to_string(wf.frequencies.size());
-            last_result_ = CommandResult{false, error};
-            return false;
-        }
-
-        if (wf.amplitudes.size() != expected_size) {
-            std::string error = "Waveform " + std::to_string(i) + ": amplitudes size mismatch";
-            last_result_ = CommandResult{false, error};
-            return false;
-        }
-
-        if (wf.offset_phases.size() != expected_size) {
-            std::string error = "Waveform " + std::to_string(i) + ": offset_phases size mismatch";
-            last_result_ = CommandResult{false, error};
-            return false;
-        }
+    // Validate individual batch size
+    if (data.num_timesteps <= 0) {
+        std::string error = "Invalid num_timesteps: " + std::to_string(data.num_timesteps);
+        std::cerr << "[AWG Thread] " << error << std::endl;
+        last_result_ = CommandResult{false, error};
+        return false;
     }
 
-    // Store batch in queue
-    batch_queue_[current_batches] = batch;
-    num_batches_++;
+    // Check if appending would exceed total capacity
+    int new_max_index = max_timestep_index_ + data.num_timesteps;
+    if (new_max_index > MAX_WAVEFORM_TIMESTEPS) {
+        std::string error = "Total timeline would exceed MAX_WAVEFORM_TIMESTEPS (" +
+                           std::to_string(MAX_WAVEFORM_TIMESTEPS) + "). Current: " +
+                           std::to_string(max_timestep_index_) + ", Adding: " +
+                           std::to_string(data.num_timesteps);
+        std::cerr << "[AWG Thread] " << error << std::endl;
+        last_result_ = CommandResult{false, error};
+        return false;
+    }
 
-    std::cout << "[AWG Thread] Batch stored successfully (ID: " << batch.batch_id << ")" << std::endl;
-    std::cout << "[AWG Thread]   Waveforms: " << batch.waveforms.size() << std::endl;
-    std::cout << "[AWG Thread]   Queue: " << num_batches_ << "/" << max_batches_ << std::endl;
+    // Validate num_tones
+    int num_channels = __builtin_popcount(AWG_CHANNEL_MASK);
+    if (data.num_tones > AOD_MAX_TONES || data.num_tones <= 0) {
+        std::string error = "Invalid num_tones: " + std::to_string(data.num_tones) +
+                           " (must be 1-" + std::to_string(AOD_MAX_TONES) + ")";
+        std::cerr << "[AWG Thread] " << error << std::endl;
+        last_result_ = CommandResult{false, error};
+        return false;
+    }
+
+    // Append batch data to GPU arrays (with strided copy for num_tones padding)
+    uploadBatchDataToGPU(gpu_buffers_,
+                         data.h_timesteps,
+                         data.h_do_generate,
+                         data.h_frequencies,
+                         data.h_amplitudes,
+                         data.h_offset_phases,
+                         data.num_timesteps,
+                         num_channels,
+                         data.num_tones,
+                         max_timestep_index_);  // Append at current end
+
+    // Store batch metadata
+    batch_trigger_types_[data.batch_id] = data.trigger_type;
+    batch_start_indices_[data.batch_id] = max_timestep_index_;
+    batch_lengths_[data.batch_id] = data.num_timesteps;
+
+    // Add to sorted batch_ids list (insert in sorted position)
+    auto insert_pos = std::lower_bound(batch_ids_.begin(), batch_ids_.end(), data.batch_id);
+    batch_ids_.insert(insert_pos, data.batch_id);
+
+    // Update max index
+    max_timestep_index_ = new_max_index;
 
     last_result_ = CommandResult{true, ""};
+
+    std::cout << "[AWG Thread] Batch " << data.batch_id << " uploaded successfully" << std::endl;
+    std::cout << "[AWG Thread]   Start index: " << batch_start_indices_[data.batch_id] << std::endl;
+    std::cout << "[AWG Thread]   Total batches: " << batch_ids_.size() << std::endl;
+    std::cout << "[AWG Thread]   Total timeline length: " << max_timestep_index_ << std::endl;
     return true;
 }
 
@@ -514,8 +532,8 @@ void AWGInterface::processCommand(const WaveformCommand& cmd) {
 
         case AWGCommandType::WAVEFORM_BATCH:
             if (cmd.waveform_batch_data) {
-                storeBatch(cmd.waveform_batch_data->batch);
-                // storeBatch sets last_result_
+                uploadBatchToGPU(*cmd.waveform_batch_data);
+                // uploadBatchToGPU sets last_result_
             } else {
                 std::cerr << "[AWG Thread] WaveformBatch command missing data" << std::endl;
                 last_result_ = CommandResult{false, "WaveformBatch command missing data"};

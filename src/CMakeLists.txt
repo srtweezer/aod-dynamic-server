@@ -17,8 +17,6 @@ set_target_properties(aod-server PROPERTIES
 
 # Link libraries
 target_link_libraries(aod-server
-    aod_proto
-    ${Protobuf_LIBRARIES}
     ${ZMQ_LIBRARIES}
     pthread
 )
