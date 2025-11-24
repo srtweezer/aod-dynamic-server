@@ -93,6 +93,10 @@ void uploadBatchDataToGPU(GPUBuffers& buffers,
                           int num_tones,
                           int target_offset);
 
+// Validate that timesteps are strictly ascending (each < next)
+// Returns true if valid, false otherwise
+bool validateTimestepsAscending(const int32_t* d_timesteps, int num_timesteps);
+
 } // namespace aod
 
 #endif // AOD_GPU_BUFFERS_H

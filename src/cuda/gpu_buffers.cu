@@ -39,11 +39,12 @@ bool allocateGPUBuffers(GPUBuffers& buffers) {
     buffers.num_channels = __builtin_popcount(AWG_CHANNEL_MASK);
     buffers.num_tones = AOD_MAX_TONES;
     buffers.timestep = WAVEFORM_TIMESTEP;
-    buffers.num_chunks = AOD_DMA_BUFFER_SIZE / (2 * WAVEFORM_TIMESTEP);
     buffers.max_timesteps = MAX_WAVEFORM_TIMESTEPS;
 
     // Calculate sizes
-    buffers.total_samples = buffers.num_chunks * buffers.num_channels * buffers.timestep;
+    // AOD_DMA_BUFFER_SIZE is total bytes for ALL channels combined
+    buffers.total_samples = AOD_DMA_BUFFER_SIZE / sizeof(int16_t);  // Total int16 samples across all channels
+    buffers.num_chunks = buffers.total_samples / (buffers.num_channels * buffers.timestep);  // Chunks across all channels
     buffers.tone_params_size = buffers.num_chunks * buffers.num_channels * buffers.num_tones;
     buffers.batch_arrays_size = buffers.max_timesteps * buffers.num_channels * buffers.num_tones;
 
@@ -214,6 +215,22 @@ void zeroGPUBuffers(GPUBuffers& buffers) {
     std::cout << "[GPU] GPU buffers zeroed" << std::endl;
 }
 
+// CUDA kernel to validate timesteps are strictly ascending
+// Each thread checks one pair (timesteps[i] < timesteps[i+1])
+// Sets result to 0 if any pair violates ascending order
+__global__ void validateAscendingKernel(const int32_t* timesteps,
+                                        int num_timesteps,
+                                        int* result) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx < num_timesteps - 1) {
+        // Check if timesteps[idx] < timesteps[idx + 1]
+        if (timesteps[idx] >= timesteps[idx + 1]) {
+            atomicMin(result, 0);  // Mark as invalid
+        }
+    }
+}
+
 // CUDA kernel to expand tone arrays from num_tones to max_tones with zero-padding
 // Each thread handles one [timestep][channel] slice
 __global__ void expandTonesKernel(
@@ -369,6 +386,35 @@ void uploadBatchDataToGPU(GPUBuffers& buffers,
               << (num_tones == max_tones ? "(direct)" : "(strided+padded)") << std::endl;
     std::cout << "[GPU]   Total GPU copy:    " << total_us << " μs" << std::endl;
     std::cout << "[GPU] ─────────────────────────" << std::endl;
+}
+
+bool validateTimestepsAscending(const int32_t* d_timesteps, int num_timesteps) {
+    if (num_timesteps <= 1) {
+        return true;  // Single or empty is trivially valid
+    }
+
+    // Allocate device memory for result flag
+    int* d_result;
+    CUDA_CHECK_VOID(cudaMalloc(&d_result, sizeof(int)));
+
+    // Initialize result to 1 (valid)
+    int init_result = 1;
+    CUDA_CHECK_VOID(cudaMemcpy(d_result, &init_result, sizeof(int), cudaMemcpyHostToDevice));
+
+    // Launch kernel - each thread checks one pair
+    int num_pairs = num_timesteps - 1;
+    int block_size = 256;
+    int grid_size = (num_pairs + block_size - 1) / block_size;
+
+    validateAscendingKernel<<<grid_size, block_size>>>(d_timesteps, num_timesteps, d_result);
+
+    // Get result
+    int result;
+    CUDA_CHECK_VOID(cudaMemcpy(&result, d_result, sizeof(int), cudaMemcpyDeviceToHost));
+
+    CUDA_CHECK_VOID(cudaFree(d_result));
+
+    return (result == 1);
 }
 
 } // namespace aod

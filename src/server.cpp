@@ -82,6 +82,8 @@ void AODServer::run() {
                     response = handleStart(request);
                 } else if (cmd == "STOP") {
                     response = handleStop(request);
+                } else if (cmd == "FINISH") {
+                    response = handleFinish(request);
                 } else if (cmd == "WAVEFORM_BATCH") {
                     response = handleWaveformBatch(request, *socket_);
                 } else {
@@ -217,6 +219,28 @@ json AODServer::handleStop(const json& request) {
         std::cout << "[Server] Stop completed successfully" << std::endl;
     } else {
         std::cout << "[Server] Stop failed: " << result.error_message << std::endl;
+    }
+
+    return {
+        {"success", result.success},
+        {"error_message", result.error_message}
+    };
+}
+
+json AODServer::handleFinish(const json& request) {
+    std::cout << "[Server] Finish command received" << std::endl;
+
+    // Create command for AWG thread
+    WaveformCommand cmd;
+    cmd.type = AWGCommandType::FINISH;
+
+    // Queue command and wait for completion
+    CommandResult result = awg_->queueCommandAndWait(cmd, 1000);
+
+    if (result.success) {
+        std::cout << "[Server] Finish completed successfully" << std::endl;
+    } else {
+        std::cout << "[Server] Finish failed: " << result.error_message << std::endl;
     }
 
     return {

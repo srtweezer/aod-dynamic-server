@@ -175,7 +175,7 @@ Start AWG output and begin FIFO streaming (future implementation).
 
 ### STOP
 
-Stop AWG output, halt DMA transfer, and clear waveform data.
+Stop AWG output immediately, halt DMA transfer, and clear waveform data.
 
 #### Request
 
@@ -196,13 +196,14 @@ Stop AWG output, halt DMA transfer, and clear waveform data.
 
 #### What It Does
 
-1. Stops card output (`M2CMD_CARD_STOP`)
-2. Stops DMA transfer (`M2CMD_DATA_STOPDMA`)
-3. Zeros software and GPU buffers
-4. **Resets timeline** - clears all waveform data from GPU
-5. **Does NOT de-initialize** - AWG stays in INITIALIZED state
+1. If streaming: Sets stop flag, exits after current batch
+2. Stops card output (`M2CMD_CARD_STOP`)
+3. Stops DMA transfer (`M2CMD_DATA_STOPDMA`)
+4. Zeros software and GPU buffers
+5. **Clears all batches** - removes all batch metadata
+6. Returns to INITIALIZED state
 
-**Note:** Stop is idempotent - safe to call multiple times even if not running.
+**Note:** STOP is immediate - does NOT play remaining queued batches.
 
 #### Example Usage (Python)
 
@@ -213,6 +214,56 @@ response = socket.recv_json()
 
 if response["success"]:
     print("AWG stopped successfully")
+```
+
+---
+
+### FINISH
+
+Gracefully exit streaming after all queued batches complete.
+
+#### Request
+
+```json
+{
+  "command": "FINISH"
+}
+```
+
+#### Response
+
+```json
+{
+  "success": true,
+  "error_message": ""
+}
+```
+
+#### What It Does
+
+1. If streaming: Sets finish flag, continues playing all batches
+2. After last batch: Exits streaming loop (does NOT enter idle)
+3. Stops card output
+4. **Clears all batches** - zeros GPU arrays and batch metadata
+5. Returns to INITIALIZED state
+
+**Behavior Comparison:**
+- **STOP**: Exit immediately after current batch, clear batches, abort remaining
+- **FINISH**: Complete ALL queued batches, then clear batches
+
+**Use Cases:**
+- STOP: Emergency abort, exit ASAP
+- FINISH: Normal completion, play everything then clean up
+
+#### Example Usage (Python)
+
+```python
+request = {"command": "FINISH"}
+socket.send_json(request)
+response = socket.recv_json()
+
+if response["success"]:
+    print("AWG finished gracefully - all batches completed")
 ```
 
 ---
@@ -569,8 +620,14 @@ class AODClient:
             raise RuntimeError(response['error_message'])
 
     def stop(self):
-        """Stop AWG output"""
+        """Stop AWG output immediately (clears batches)"""
         response = self._send_command({'command': 'STOP'})
+        if not response['success']:
+            raise RuntimeError(response['error_message'])
+
+    def finish(self):
+        """Finish streaming gracefully (completes all batches)"""
+        response = self._send_command({'command': 'FINISH'})
         if not response['success']:
             raise RuntimeError(response['error_message'])
 

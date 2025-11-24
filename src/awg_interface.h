@@ -35,6 +35,7 @@ enum class AWGCommandType {
     INITIALIZE,
     START,
     STOP,
+    FINISH,           // Graceful exit after all batches complete
     WAVEFORM_BATCH,
 };
 
@@ -126,8 +127,20 @@ private:
     // Stop AWG output and DMA (called from thread)
     bool stopAWG();
 
+    // Finish streaming gracefully after all batches (called from thread)
+    bool finishAWG();
+
     // Upload waveform batch directly to GPU (called from thread)
     bool uploadBatchToGPU(const WaveformCommand::WaveformBatchData& data);
+
+    // FIFO streaming methods (called from thread)
+    bool startStreaming();                              // Main streaming loop
+    bool playBatch(int batch_id);                       // Stream single batch
+    bool fifoStreamLoop(size_t total_bytes, size_t buffer_size);  // FIFO transfer loop
+    bool waitForCompletion();                           // Wait for small waveform completion
+    bool processBatchTransition();                      // Drain command queue between batches
+    void idleStreamingLoop();                           // Wait loop after all batches complete
+    void signalCommandComplete();                       // Signal command result ready
 
     // Zero the software buffer
     void zeroBuffer();
@@ -159,13 +172,15 @@ private:
     std::atomic<AWGState> state_;
     drv_handle card_handle_;
 
-    // FIFO buffers
-    void* sw_buffer_;
-    size_t sw_buffer_size_;
-    size_t notify_size_;
+    // DMA parameters
+    size_t notify_size_;  // Notification chunk size for FIFO transfers
 
-    // GPU buffers
+    // GPU buffers (h_samples_pinned used for AWG DMA transfers)
     GPUBuffers gpu_buffers_;
+
+    // Page-aligned buffer for AWG DMA (testing alternative to GPU pinned)
+    void* page_aligned_buffer_;
+    size_t page_aligned_buffer_size_;
 
     // Shared memory for zero-copy client communication (optional)
     std::unique_ptr<SharedMemoryManager> shared_memory_;
@@ -174,10 +189,18 @@ private:
     std::vector<int> batch_ids_;                              // Sorted list of batch IDs for playback order
     std::unordered_map<int, std::string> batch_trigger_types_; // batch_id -> trigger type
     std::unordered_map<int, int> batch_start_indices_;         // batch_id -> start index in GPU arrays
-    std::unordered_map<int, int> batch_lengths_;               // batch_id -> length in timesteps
+    std::unordered_map<int, int> batch_lengths_;               // batch_id -> number of timesteps (array length)
+    std::unordered_map<int, int> batch_timestep_duration_;     // batch_id -> max timestep value (waveform duration)
 
     // Maximum index used in GPU timeline arrays (for appending)
     int max_timestep_index_;
+
+    // FIFO streaming state
+    std::atomic<bool> streaming_active_;   // True when in streaming loop
+    std::atomic<bool> stop_requested_;     // Flag to exit streaming immediately
+    std::atomic<bool> finish_requested_;   // Flag to exit after all batches complete
+    size_t bytes_available_;               // Bytes generated and ready to stream
+    size_t write_position_;                // Current write position in circular sw_buffer_
 };
 
 } // namespace aod
