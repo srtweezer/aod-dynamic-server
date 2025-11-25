@@ -620,7 +620,7 @@ bool AWGInterface::uploadBatchToGPU(const WaveformCommand::WaveformBatchData& da
                          data.h_do_generate,
                          data.h_frequencies,
                          data.h_amplitudes,
-                         data.h_offset_phases,
+                         data.h_offset_phases_user,
                          data.num_timesteps,
                          num_channels,
                          data.num_tones,

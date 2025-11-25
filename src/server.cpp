@@ -307,7 +307,7 @@ json AODServer::handleWaveformBatchZmq(const json& request, zmq::socket_t& socke
     uint8_t* h_do_generate = static_cast<uint8_t*>(arrays[1].data());
     double* h_frequencies = static_cast<double*>(arrays[2].data());
     float* h_amplitudes = static_cast<float*>(arrays[3].data());
-    float* h_offset_phases = static_cast<float*>(arrays[4].data());
+    float* h_offset_phases_user = static_cast<float*>(arrays[4].data());
 
     // Validate sizes (based on client's num_tones)
     size_t expected_size = static_cast<size_t>(num_timesteps) * num_channels * num_tones;
@@ -341,7 +341,7 @@ json AODServer::handleWaveformBatchZmq(const json& request, zmq::socket_t& socke
     cmd.waveform_batch_data->h_do_generate = h_do_generate;
     cmd.waveform_batch_data->h_frequencies = h_frequencies;
     cmd.waveform_batch_data->h_amplitudes = h_amplitudes;
-    cmd.waveform_batch_data->h_offset_phases = h_offset_phases;
+    cmd.waveform_batch_data->h_offset_phases_user = h_offset_phases_user;
 
     // Queue command and wait for completion (synchronous copy to GPU in AWG thread)
     auto t_queue_start = std::chrono::high_resolution_clock::now();
@@ -429,7 +429,7 @@ json AODServer::handleWaveformBatchShm(const json& request) {
     uint8_t* h_do_generate = reinterpret_cast<uint8_t*>(shm_base + do_generate_offset);
     double* h_frequencies = reinterpret_cast<double*>(shm_base + frequencies_offset);
     float* h_amplitudes = reinterpret_cast<float*>(shm_base + amplitudes_offset);
-    float* h_offset_phases = reinterpret_cast<float*>(shm_base + phases_offset);
+    float* h_offset_phases_user = reinterpret_cast<float*>(shm_base + phases_offset);
 
     auto t_shm_end = std::chrono::high_resolution_clock::now();
     auto shm_us = std::chrono::duration_cast<std::chrono::microseconds>(t_shm_end - t_shm_start).count();
@@ -447,7 +447,7 @@ json AODServer::handleWaveformBatchShm(const json& request) {
     cmd.waveform_batch_data->h_do_generate = h_do_generate;
     cmd.waveform_batch_data->h_frequencies = h_frequencies;
     cmd.waveform_batch_data->h_amplitudes = h_amplitudes;
-    cmd.waveform_batch_data->h_offset_phases = h_offset_phases;
+    cmd.waveform_batch_data->h_offset_phases_user = h_offset_phases_user;
 
     // Queue command and wait for completion (synchronous copy to GPU in AWG thread)
     auto t_queue_start = std::chrono::high_resolution_clock::now();

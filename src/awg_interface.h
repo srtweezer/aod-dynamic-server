@@ -58,7 +58,7 @@ struct WaveformCommand {
         uint8_t* h_do_generate;          // Size: num_timesteps - 1 (controls intervals)
         double* h_frequencies;           // Size: num_timesteps * num_channels * num_tones (flattened, float64)
         float* h_amplitudes;             // Size: num_timesteps * num_channels * num_tones
-        float* h_offset_phases;          // Size: num_timesteps * num_channels * num_tones
+        float* h_offset_phases_user;     // Size: num_timesteps * num_channels * num_tones (user-provided)
     };
 
     // Shared pointers to command data
