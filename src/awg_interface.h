@@ -55,8 +55,8 @@ struct WaveformCommand {
         int num_tones;                   // Actual number of tones used (can be < AOD_MAX_TONES)
         std::string trigger_type;        // "software" or "external"
         int32_t* h_timesteps;            // Size: num_timesteps
-        uint8_t* h_do_generate;          // Size: num_timesteps
-        float* h_frequencies;            // Size: num_timesteps * num_channels * num_tones (flattened)
+        uint8_t* h_do_generate;          // Size: num_timesteps - 1 (controls intervals)
+        double* h_frequencies;           // Size: num_timesteps * num_channels * num_tones (flattened, float64)
         float* h_amplitudes;             // Size: num_timesteps * num_channels * num_tones
         float* h_offset_phases;          // Size: num_timesteps * num_channels * num_tones
     };
@@ -177,10 +177,6 @@ private:
 
     // GPU buffers (h_samples_pinned used for AWG DMA transfers)
     GPUBuffers gpu_buffers_;
-
-    // Page-aligned buffer for AWG DMA (testing alternative to GPU pinned)
-    void* page_aligned_buffer_;
-    size_t page_aligned_buffer_size_;
 
     // Shared memory for zero-copy client communication (optional)
     std::unique_ptr<SharedMemoryManager> shared_memory_;

@@ -18,7 +18,7 @@ struct GPUBuffers {
 
     // Batch data arrays (global timeline combining all batches)
     int32_t* d_batch_timesteps;   // Timesteps array [timestep]
-    bool* d_batch_do_generate;    // Generation flags [timestep]
+    bool* d_batch_do_generate;    // Generation flags [timestep-1] (interval control)
     float* d_batch_frequencies;   // Frequencies [timestep][channel][tone]
     float* d_batch_amplitudes;    // Amplitudes [timestep][channel][tone]
     float* d_batch_offset_phases; // Offset phases [timestep][channel][tone]
@@ -28,6 +28,9 @@ struct GPUBuffers {
     float* d_temp_frequencies;    // Same size as batch arrays
     float* d_temp_amplitudes;
     float* d_temp_offset_phases;
+
+    // Temporary buffer for float64 frequency data before conversion
+    double* d_temp_frequencies_fp64;  // For receiving float64 before conversion
 
     // Pinned host memory (CPU, page-locked for fast transfer)
     int16_t* h_samples_pinned;    // For DMA transfers to AWG
@@ -58,6 +61,7 @@ struct GPUBuffers {
           d_temp_frequencies(nullptr),
           d_temp_amplitudes(nullptr),
           d_temp_offset_phases(nullptr),
+          d_temp_frequencies_fp64(nullptr),
           h_samples_pinned(nullptr),
           num_chunks(0),
           num_channels(0),
@@ -85,7 +89,7 @@ void zeroGPUBuffers(GPUBuffers& buffers);
 void uploadBatchDataToGPU(GPUBuffers& buffers,
                           const int32_t* h_timesteps,
                           const uint8_t* h_do_generate,
-                          const float* h_frequencies,
+                          const double* h_frequencies,
                           const float* h_amplitudes,
                           const float* h_offset_phases,
                           int num_timesteps,

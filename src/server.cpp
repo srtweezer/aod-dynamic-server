@@ -305,15 +305,15 @@ json AODServer::handleWaveformBatchZmq(const json& request, zmq::socket_t& socke
 
     int32_t* h_timesteps = static_cast<int32_t*>(arrays[0].data());
     uint8_t* h_do_generate = static_cast<uint8_t*>(arrays[1].data());
-    float* h_frequencies = static_cast<float*>(arrays[2].data());
+    double* h_frequencies = static_cast<double*>(arrays[2].data());
     float* h_amplitudes = static_cast<float*>(arrays[3].data());
     float* h_offset_phases = static_cast<float*>(arrays[4].data());
 
     // Validate sizes (based on client's num_tones)
     size_t expected_size = static_cast<size_t>(num_timesteps) * num_channels * num_tones;
     if (arrays[0].size() != static_cast<size_t>(num_timesteps) * sizeof(int32_t) ||
-        arrays[1].size() != static_cast<size_t>(num_timesteps) * sizeof(uint8_t) ||
-        arrays[2].size() != expected_size * sizeof(float) ||
+        arrays[1].size() != static_cast<size_t>(num_timesteps - 1) * sizeof(uint8_t) ||
+        arrays[2].size() != expected_size * sizeof(double) ||
         arrays[3].size() != expected_size * sizeof(float) ||
         arrays[4].size() != expected_size * sizeof(float)) {
         std::string error = "Array size mismatch. Expected " +
@@ -411,22 +411,23 @@ json AODServer::handleWaveformBatchShm(const json& request) {
 
     size_t timesteps_offset = 0;
     size_t do_generate_offset = num_timesteps * sizeof(int32_t);
-    size_t frequencies_offset = do_generate_offset + num_timesteps * sizeof(uint8_t);
+    size_t frequencies_offset = do_generate_offset + (num_timesteps - 1) * sizeof(uint8_t);
     // Align to 16 bytes for performance
     frequencies_offset = (frequencies_offset + 15) & ~15;
 
     // Compact array size (uses actual num_tones, not AOD_MAX_TONES)
     size_t compact_array_elements = num_timesteps * num_channels * num_tones;
-    size_t compact_array_bytes = compact_array_elements * sizeof(float);
+    size_t compact_freq_bytes = compact_array_elements * sizeof(double);  // frequencies are float64
+    size_t compact_array_bytes = compact_array_elements * sizeof(float);  // amp/phase are float32
 
-    size_t amplitudes_offset = frequencies_offset + compact_array_bytes;
+    size_t amplitudes_offset = frequencies_offset + compact_freq_bytes;
     size_t phases_offset = amplitudes_offset + compact_array_bytes;
 
     // Get pointers to compact arrays in shared memory
     char* shm_base = static_cast<char*>(shm_ptr);
     int32_t* h_timesteps = reinterpret_cast<int32_t*>(shm_base + timesteps_offset);
     uint8_t* h_do_generate = reinterpret_cast<uint8_t*>(shm_base + do_generate_offset);
-    float* h_frequencies = reinterpret_cast<float*>(shm_base + frequencies_offset);
+    double* h_frequencies = reinterpret_cast<double*>(shm_base + frequencies_offset);
     float* h_amplitudes = reinterpret_cast<float*>(shm_base + amplitudes_offset);
     float* h_offset_phases = reinterpret_cast<float*>(shm_base + phases_offset);
 

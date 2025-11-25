@@ -69,9 +69,9 @@ set(MAX_WAVEFORM_TIMESTEPS 16384 CACHE STRING "Maximum timesteps in batch arrays
 # Waveform buffer sizes
 # IMPORTANT: AOD_DMA_BUFFER_SIZE must be a multiple of (WAVEFORM_TIMESTEP * bytes_per_sample * active_channels)
 # For 16-bit samples (2 bytes) and 4 channels: multiple of 512 * 2 * 4 = 4096 bytes
-set(AOD_DMA_BUFFER_SIZE 8388608 CACHE STRING "DMA buffer size in bytes (8 MB)")
-set(AOD_NOTIFY_SIZE 524288 CACHE STRING "Notification chunk size in bytes (500 KB)")
-set(AOD_HW_BUFFER_SIZE 67108864 CACHE STRING "Hardware buffer size in bytes (64 MB)")
+set(AOD_DMA_BUFFER_SIZE 2097152 CACHE STRING "DMA buffer size in bytes (8 MB)")
+set(AOD_NOTIFY_SIZE 131072 CACHE STRING "Notification chunk size in bytes (500 KB)")
+set(AOD_HW_BUFFER_SIZE 1048576 CACHE STRING "Hardware buffer size in bytes (64 MB)")
 
 # -----------------------------------------------------------------------------
 # GPU/CUDA Configuration

@@ -7,32 +7,8 @@
 #include <chrono>
 #include <unistd.h>  // For getpid()
 #include <cuda_runtime.h>  // For cudaMemcpy
-#include <sys/mman.h>
-#include <fcntl.h>
 
 namespace aod {
-
-// Spectrum-recommended page-aligned memory allocation
-static void* pvAllocMemPageAligned(uint64_t qwBytes) {
-    void* pvTmp;
-    int fd = open("/dev/zero", O_RDONLY);
-    pvTmp = mmap(NULL, qwBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
-
-    if (pvTmp != MAP_FAILED) {
-        memset(pvTmp, 0, qwBytes);  // Ensure physical memory allocated
-    } else {
-        pvTmp = nullptr;
-    }
-
-    close(fd);
-    return pvTmp;
-}
-
-static void vFreeMemPageAligned(void* pvAdr, uint64_t qwBytes) {
-    if (pvAdr) {
-        munmap(pvAdr, qwBytes);
-    }
-}
 
 AWGInterface::AWGInterface()
     : running_(false),
@@ -49,9 +25,7 @@ AWGInterface::AWGInterface()
       stop_requested_(false),
       finish_requested_(false),
       bytes_available_(0),
-      write_position_(0),
-      page_aligned_buffer_(nullptr),
-      page_aligned_buffer_size_(0) {
+      write_position_(0) {
 }
 
 AWGInterface::~AWGInterface() {
@@ -274,8 +248,9 @@ bool AWGInterface::connectHardware() {
             size_t arrays_size = MAX_WAVEFORM_TIMESTEPS * num_channels * AOD_MAX_TONES;
             size_t shm_size =
                 MAX_WAVEFORM_TIMESTEPS * sizeof(int32_t) +      // timesteps
-                MAX_WAVEFORM_TIMESTEPS * sizeof(uint8_t) +      // do_generate
-                3 * arrays_size * sizeof(float);                 // freq/amp/phase
+                (MAX_WAVEFORM_TIMESTEPS - 1) * sizeof(uint8_t) +  // do_generate
+                arrays_size * sizeof(double) +                   // frequencies (float64)
+                2 * arrays_size * sizeof(float);                 // amp/phase (float32)
 
             shared_memory_ = std::make_unique<SharedMemoryManager>();
             if (!shared_memory_->create(shm_name, shm_size)) {
@@ -306,13 +281,6 @@ void AWGInterface::disconnectHardware() {
         if (shared_memory_) {
             shared_memory_->destroy();
             shared_memory_.reset();
-        }
-
-        // Free page-aligned buffer
-        if (page_aligned_buffer_) {
-            vFreeMemPageAligned(page_aligned_buffer_, page_aligned_buffer_size_);
-            page_aligned_buffer_ = nullptr;
-            page_aligned_buffer_size_ = 0;
         }
 
         // Free GPU buffers
@@ -492,23 +460,7 @@ bool AWGInterface::initializeAWG(const std::vector<int32>& amplitudes_mv) {
               << " (" << notify_duration_us / 1000.0 << " ms)" << std::endl;
     std::cout << "[AWG Thread] ═══════════════════════════════════════════════════" << std::endl;
 
-    // 8. Allocate page-aligned buffer for DMA (Spectrum-recommended)
-    if (!page_aligned_buffer_) {
-        page_aligned_buffer_size_ = pinned_buffer_bytes;
-        page_aligned_buffer_ = pvAllocMemPageAligned(page_aligned_buffer_size_);
-
-        if (!page_aligned_buffer_) {
-            std::string error = "Failed to allocate page-aligned DMA buffer";
-            std::cerr << "[AWG Thread] " << error << std::endl;
-            last_result_ = CommandResult{false, error};
-            return false;
-        }
-
-        std::cout << "[AWG Thread] Allocated page-aligned DMA buffer: "
-                  << page_aligned_buffer_size_ / (1024*1024) << " MB" << std::endl;
-    }
-
-    // 9. Zero the buffers
+    // 8. Zero the buffers
     zeroBuffer();
 
     std::cout << "[AWG Thread] AWG initialized successfully" << std::endl;
@@ -590,7 +542,22 @@ bool AWGInterface::finishAWG() {
     // Set finish flag - streaming loop will exit after all batches
     finish_requested_ = true;
 
-    std::cout << "[AWG Thread] Finish flag set - will exit after all queued batches complete" << std::endl;
+    std::cout << "[AWG Thread] Finish flag set - waiting for all batches to complete..." << std::endl;
+
+    // Wait for streaming loop to finish all batches and exit
+    int wait_count = 0;
+    while (streaming_active_ && wait_count < 60000) {  // Max 60 seconds (100us * 60000)
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+        wait_count++;
+    }
+
+    if (streaming_active_) {
+        std::cerr << "[AWG Thread] Warning: Streaming did not finish within timeout" << std::endl;
+        last_result_ = CommandResult{false, "FINISH timeout - streaming did not complete"};
+        return false;
+    }
+
+    std::cout << "[AWG Thread] FINISH complete - all batches played and cleaned up" << std::endl;
     last_result_ = CommandResult{true, ""};
     return true;
 }
@@ -743,8 +710,9 @@ void AWGInterface::processCommand(const WaveformCommand& cmd) {
 
         case AWGCommandType::START:
             startStreaming();
-            // startStreaming sets last_result_ and blocks until streaming ends
-            break;
+            // startStreaming signals completion immediately, then blocks
+            // Don't signal again at end of processCommand
+            return;  // Early return - already signaled
 
         case AWGCommandType::STOP:
             stopAWG();
@@ -825,6 +793,7 @@ bool AWGInterface::startStreaming() {
                            std::to_string(static_cast<int>(state_.load())) + ")";
         std::cerr << "[AWG Thread] " << error << std::endl;
         last_result_ = CommandResult{false, error};
+        signalCommandComplete();  // Signal failure
         return false;
     }
 
@@ -832,6 +801,7 @@ bool AWGInterface::startStreaming() {
         std::string error = "No batches loaded";
         std::cerr << "[AWG Thread] " << error << std::endl;
         last_result_ = CommandResult{false, error};
+        signalCommandComplete();  // Signal failure
         return false;
     }
 
@@ -846,6 +816,13 @@ bool AWGInterface::startStreaming() {
     std::cout << "[AWG Thread] Will play " << batch_ids_.size() << " batches in order: ";
     for (int id : batch_ids_) std::cout << id << " ";
     std::cout << std::endl;
+
+    // Signal success immediately - streaming has started
+    // Client shouldn't wait for streaming to finish
+    last_result_ = CommandResult{true, ""};
+    signalCommandComplete();
+
+    std::cout << "[AWG Thread] START command signaled as successful, entering streaming loop" << std::endl;
 
     // Main batch loop - use while loop to handle dynamic batch insertion
     size_t next_batch_to_play = 0;
@@ -1011,21 +988,32 @@ bool AWGInterface::playBatch(int batch_id) {
         return false;
     }
 
-    // 2. Use page-aligned buffer for DMA (testing)
-    size_t buffer_bytes = page_aligned_buffer_size_;
+    // 2. Use GPU pinned buffer for DMA
+    size_t buffer_bytes = gpu_buffers_.total_samples * sizeof(int16_t);
     size_t initial_fill = std::min(waveform_size_bytes, buffer_bytes);
 
-    std::cout << "[AWG Thread]   DMA buffer size: " << buffer_bytes / 1024 << " KB (page-aligned)" << std::endl;
+    std::cout << "[AWG Thread]   DMA buffer size: " << buffer_bytes / 1024 << " KB (GPU pinned)" << std::endl;
     std::cout << "[AWG Thread]   Initial fill: " << initial_fill / 1024 << " KB" << std::endl;
 
-    // 3. Generate waveform into buffer (PLACEHOLDER: zeros for now)
-    std::cout << "[AWG Thread]   Generating waveform (placeholder zeros)..." << std::endl;
+    // 3. Copy initial buffer from GPU samples to pinned memory
+    std::cout << "[AWG Thread]   Copying initial buffer from GPU..." << std::endl;
 
-    // TODO: GPU waveform generation
-    // For now: zeros for initial fill
-    std::memset(page_aligned_buffer_, 0, initial_fill);
+    // Copy from beginning of d_samples to beginning of h_samples_pinned
+    cudaError_t cuda_err = cudaMemcpy(
+        gpu_buffers_.h_samples_pinned,
+        gpu_buffers_.d_samples,
+        initial_fill,
+        cudaMemcpyDeviceToHost
+    );
 
-    std::cout << "[AWG Thread]   Generated " << initial_fill << " bytes" << std::endl;
+    if (cuda_err != cudaSuccess) {
+        std::string error = std::string("Initial GPU copy failed: ") + cudaGetErrorString(cuda_err);
+        std::cerr << "[AWG Thread] " << error << std::endl;
+        last_result_ = CommandResult{false, error};
+        return false;
+    }
+
+    std::cout << "[AWG Thread]   Copied " << initial_fill << " bytes from GPU" << std::endl;
 
     // 4. Set timeout for DMA operations
     spcm_dwSetParam_i32(card_handle_, SPC_TIMEOUT, 5000);  // 5 second timeout
@@ -1034,7 +1022,7 @@ bool AWGInterface::playBatch(int batch_id) {
     size_t dma_buffer_size = std::min(waveform_size_bytes, buffer_bytes);
     spcm_dwDefTransfer_i64(card_handle_, SPCM_BUF_DATA, SPCM_DIR_PCTOCARD,
                           notify_size_,
-                          page_aligned_buffer_,
+                          (void*) gpu_buffers_.h_samples_pinned,
                           0,
                           dma_buffer_size);
 
@@ -1143,6 +1131,21 @@ bool AWGInterface::fifoStreamLoop(size_t total_waveform_bytes, size_t buffer_siz
             size_t bytes_remaining = total_waveform_bytes - bytes_sent_to_card;
             if (bytes_to_mark > bytes_remaining) {
                 bytes_to_mark = bytes_remaining;
+            }
+
+            // Copy from GPU samples array to pinned memory at same circular position
+            size_t buffer_offset = write_position_ / sizeof(int16_t);
+
+            cudaError_t cuda_err = cudaMemcpy(
+                gpu_buffers_.h_samples_pinned + buffer_offset,
+                gpu_buffers_.d_samples + buffer_offset,
+                bytes_to_mark,
+                cudaMemcpyDeviceToHost
+            );
+
+            if (cuda_err != cudaSuccess) {
+                std::cerr << "[AWG Thread] GPU copy failed: " << cudaGetErrorString(cuda_err) << std::endl;
+                return false;
             }
 
             // Mark data available to card

@@ -2,6 +2,44 @@
 
 This document describes the JSON-based API for communicating with the AOD Dynamic Server using zero-copy ZeroMQ messaging.
 
+## ⚠️ BREAKING CHANGES
+
+### Version 2.0
+
+**Two critical protocol changes that require client updates:**
+
+1. **do_generate Array Size Reduction**
+   - **OLD**: Size was `num_timesteps` elements
+   - **NEW**: Size is `num_timesteps - 1` elements
+   - **Semantics**: `do_generate[i]` controls generation in interval `[timestep[i], timestep[i+1]]`
+   - **Migration**: Change `np.zeros(num_timesteps, dtype=np.uint8)` to `np.zeros(num_timesteps - 1, dtype=np.uint8)`
+
+2. **Frequency Precision Upgrade**
+   - **OLD**: Frequencies sent as `float32` (single precision)
+   - **NEW**: Frequencies sent as `float64` (double precision)
+   - **Rationale**: Improved phase accumulation accuracy for long waveform sequences
+   - **Server**: Converts `float64` → `float32` internally during GPU upload using optimized CUDA kernel
+   - **Migration**: Change `np.zeros(..., dtype=np.float32)` to `np.zeros(..., dtype=np.float64)` for frequencies only
+   - **Note**: Amplitudes and phases remain `float32`
+
+**Example Migration:**
+
+```python
+# OLD:
+frequencies = np.zeros((num_timesteps, num_channels, num_tones), dtype=np.float32)
+do_generate = np.ones(num_timesteps, dtype=np.uint8)
+
+# NEW:
+frequencies = np.zeros((num_timesteps, num_channels, num_tones), dtype=np.float64)
+do_generate = np.ones(num_timesteps - 1, dtype=np.uint8)
+```
+
+**Memory Impact:**
+- Shared memory requirement increases by ~100 MB for frequency arrays (in default configuration)
+- ZMQ message size increases by ~48 MB per batch (frequency array doubles in size)
+
+---
+
 ## Communication Protocol
 
 - **Transport**: ZeroMQ REQ-REP pattern
@@ -47,8 +85,8 @@ set(USE_SHARED_MEMORY TRUE CACHE BOOL "Enable shared memory for client communica
 **ZMQ Arrays Mode:**
 - Part 0: JSON metadata
 - Part 1: timesteps array (int32, binary)
-- Part 2: do_generate array (uint8, binary)
-- Part 3: frequencies array (float32, binary, flattened)
+- Part 2: do_generate array (uint8, binary) - **NOTE: Size is num_timesteps - 1**
+- Part 3: frequencies array (**float64**, binary, flattened) - **BREAKING CHANGE: was float32**
 - Part 4: amplitudes array (float32, binary, flattened)
 - Part 5: offset_phases array (float32, binary, flattened)
 
@@ -297,14 +335,18 @@ Upload a pre-flattened timeline of waveform data directly to GPU.
 - Description: Time coordinate for each timestep
 
 **Part 2 - do_generate (uint8):**
-- Shape: `[num_timesteps]`
+- Shape: `[num_timesteps - 1]` (**BREAKING CHANGE: was num_timesteps**)
 - Values: 0 (delay period) or 1 (generate waveform)
-- Description: Flag indicating whether to generate waveform at this timestep
+- Description: Flag indicating whether to generate waveform in the interval between timesteps
+- Semantics: `do_generate[i]` controls generation in interval `[timestep[i], timestep[i+1]]`
+- No generation after the last timestep
 
-**Part 3 - frequencies (float32):**
+**Part 3 - frequencies (float64):**  (**BREAKING CHANGE: was float32**)
 - Shape: `[num_timesteps, num_channels, num_tones]` (flattened)
 - Units: Hz
+- Data Type: **float64 (double precision)** - server converts to float32 internally during GPU upload
 - Description: Frequency for each tone at each timestep
+- Rationale: Improved phase accumulation accuracy for long waveform sequences
 - Note: `num_tones` is actual tones used (can be < AOD_MAX_TONES). Server pads to AOD_MAX_TONES with zeros.
 
 **Part 4 - amplitudes (float32):**
@@ -410,22 +452,27 @@ num_tones = 2     # Actual tones used (can be < AOD_MAX_TONES = 128)
 
 # Pre-allocate arrays
 timesteps = np.zeros(num_timesteps, dtype=np.int32)
-do_generate = np.zeros(num_timesteps, dtype=np.uint8)
-frequencies = np.zeros((num_timesteps, num_channels, num_tones), dtype=np.float32)
+do_generate = np.zeros(num_timesteps - 1, dtype=np.uint8)  # N-1 elements!
+frequencies = np.zeros((num_timesteps, num_channels, num_tones), dtype=np.float64)  # float64!
 amplitudes = np.zeros((num_timesteps, num_channels, num_tones), dtype=np.float32)
 phases = np.zeros((num_timesteps, num_channels, num_tones), dtype=np.float32)
 
 # Fill in waveform 1 delay (timesteps 0-9)
 idx = 0
+do_gen_idx = 0
 for d in range(10):
     timesteps[idx] = d
-    do_generate[idx] = 0  # Delay, no generation
+    if idx < num_timesteps - 1:
+        do_generate[do_gen_idx] = 0  # Delay in interval [d, d+1]
+        do_gen_idx += 1
     idx += 1
 
 # Fill in waveform 1 data (timesteps 10-109)
 for step in range(100):
     timesteps[idx] = step
-    do_generate[idx] = 1  # Generate waveform
+    if idx < num_timesteps - 1:
+        do_generate[do_gen_idx] = 1  # Generate in interval [step, step+1]
+        do_gen_idx += 1
     # Fill frequencies, amplitudes, phases for all channels/tones
     for ch in range(num_channels):
         for tone in range(num_tones):  # Use actual num_tones
