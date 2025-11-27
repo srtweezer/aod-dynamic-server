@@ -19,22 +19,18 @@ struct GPUBuffers {
     // Batch data arrays (global timeline combining all batches)
     int32_t* d_batch_timesteps;   // Timesteps array [timestep]
     bool* d_batch_do_generate;    // Generation flags [timestep-1] (interval control)
-    float* d_batch_frequencies;   // Frequencies [timestep][channel][tone]
     float* d_batch_amplitudes;    // Amplitudes [timestep][channel][tone]
-    float* d_batch_offset_phases_user; // User-provided offset phases [timestep][channel][tone]
 
-    // Temporary buffers for compact data (strided copy optimization)
-    // Used when client sends num_tones < AOD_MAX_TONES
-    float* d_temp_frequencies;    // Same size as batch arrays
-    float* d_temp_amplitudes;
-    float* d_temp_offset_phases_user;
+    // Polynomial coefficients for waveform generation [interval][channel][tone]
+    // where interval = num_timesteps - 1
+    float* d_batch_coef0;   // Constant term: (2π*f1*t1 + phi1) % 2π
+    float* d_batch_coef1;   // Linear term: (delta_psi+π)%(2π)-π + 2π*f1*dt
+    float* d_batch_coef2;   // Quadratic term: π*(f2-f1)*dt
 
-    // Temporary buffer for float64 frequency data before conversion
-    double* d_temp_frequencies_fp64;  // For receiving float64 before conversion
-
-    // Computed phase arrays (generated from user phases + frequencies)
-    float* d_batch_offset_phases;       // Computed offset phases [timestep][channel][tone]
-    float* d_batch_phase_corrections;   // Phase corrections [timestep-1][channel][tone]
+    // Temporary buffers for amplitude striding and coefficient computation
+    float* d_temp_amplitudes;         // For amplitude striding
+    double* d_temp_frequencies;       // For coefficient computation [timestep][channel][tone]
+    float* d_temp_offset_phases;      // For coefficient computation [timestep][channel][tone]
 
     // Pinned host memory (CPU, page-locked for fast transfer)
     int16_t* h_samples_pinned;    // For DMA transfers to AWG
@@ -59,15 +55,13 @@ struct GPUBuffers {
           d_frequencies(nullptr),
           d_batch_timesteps(nullptr),
           d_batch_do_generate(nullptr),
-          d_batch_frequencies(nullptr),
           d_batch_amplitudes(nullptr),
-          d_batch_offset_phases_user(nullptr),
-          d_temp_frequencies(nullptr),
+          d_batch_coef0(nullptr),
+          d_batch_coef1(nullptr),
+          d_batch_coef2(nullptr),
           d_temp_amplitudes(nullptr),
-          d_temp_offset_phases_user(nullptr),
-          d_temp_frequencies_fp64(nullptr),
-          d_batch_offset_phases(nullptr),
-          d_batch_phase_corrections(nullptr),
+          d_temp_frequencies(nullptr),
+          d_temp_offset_phases(nullptr),
           h_samples_pinned(nullptr),
           num_chunks(0),
           num_channels(0),

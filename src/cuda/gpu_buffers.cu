@@ -86,25 +86,22 @@ bool allocateGPUBuffers(GPUBuffers& buffers) {
     // Allocate batch data arrays
     CUDA_CHECK(cudaMalloc(&buffers.d_batch_timesteps, batch_timesteps_bytes));
     CUDA_CHECK(cudaMalloc(&buffers.d_batch_do_generate, batch_flags_bytes));
-    CUDA_CHECK(cudaMalloc(&buffers.d_batch_frequencies, batch_arrays_bytes));
     CUDA_CHECK(cudaMalloc(&buffers.d_batch_amplitudes, batch_arrays_bytes));
-    CUDA_CHECK(cudaMalloc(&buffers.d_batch_offset_phases_user, batch_arrays_bytes));
 
-    // Allocate temporary buffers for strided copy (same size as batch arrays)
-    CUDA_CHECK(cudaMalloc(&buffers.d_temp_frequencies, batch_arrays_bytes));
+    // Allocate coefficient arrays [interval][channel][tone]
+    size_t coef_bytes = (buffers.max_timesteps - 1) *
+                        buffers.num_channels *
+                        buffers.num_tones * sizeof(float);
+    CUDA_CHECK(cudaMalloc(&buffers.d_batch_coef0, coef_bytes));
+    CUDA_CHECK(cudaMalloc(&buffers.d_batch_coef1, coef_bytes));
+    CUDA_CHECK(cudaMalloc(&buffers.d_batch_coef2, coef_bytes));
+
+    // Allocate temporary buffers
     CUDA_CHECK(cudaMalloc(&buffers.d_temp_amplitudes, batch_arrays_bytes));
-    CUDA_CHECK(cudaMalloc(&buffers.d_temp_offset_phases_user, batch_arrays_bytes));
-
-    // Allocate temporary buffer for float64 frequency data
-    size_t batch_arrays_bytes_fp64 = buffers.batch_arrays_size * sizeof(double);
-    CUDA_CHECK(cudaMalloc(&buffers.d_temp_frequencies_fp64, batch_arrays_bytes_fp64));
-
-    // Allocate computed phase arrays
-    CUDA_CHECK(cudaMalloc(&buffers.d_batch_offset_phases, batch_arrays_bytes));
-    size_t phase_corrections_bytes = (buffers.max_timesteps - 1) *
-                                      buffers.num_channels *
-                                      buffers.num_tones * sizeof(float);
-    CUDA_CHECK(cudaMalloc(&buffers.d_batch_phase_corrections, phase_corrections_bytes));
+    size_t temp_freq_bytes = buffers.batch_arrays_size * sizeof(double);
+    size_t temp_phase_bytes = buffers.batch_arrays_size * sizeof(float);
+    CUDA_CHECK(cudaMalloc(&buffers.d_temp_frequencies, temp_freq_bytes));
+    CUDA_CHECK(cudaMalloc(&buffers.d_temp_offset_phases, temp_phase_bytes));
 
     // Allocate pinned host memory
     std::cout << "[GPU] Allocating pinned host memory..." << std::endl;
@@ -118,11 +115,10 @@ bool allocateGPUBuffers(GPUBuffers& buffers) {
     CUDA_CHECK(cudaMemset(buffers.d_frequencies, 0, tone_params_bytes));
     CUDA_CHECK(cudaMemset(buffers.d_batch_timesteps, 0, batch_timesteps_bytes));
     CUDA_CHECK(cudaMemset(buffers.d_batch_do_generate, 0, batch_flags_bytes));
-    CUDA_CHECK(cudaMemset(buffers.d_batch_frequencies, 0, batch_arrays_bytes));
     CUDA_CHECK(cudaMemset(buffers.d_batch_amplitudes, 0, batch_arrays_bytes));
-    CUDA_CHECK(cudaMemset(buffers.d_batch_offset_phases_user, 0, batch_arrays_bytes));
-    CUDA_CHECK(cudaMemset(buffers.d_batch_offset_phases, 0, batch_arrays_bytes));
-    CUDA_CHECK(cudaMemset(buffers.d_batch_phase_corrections, 0, phase_corrections_bytes));
+    CUDA_CHECK(cudaMemset(buffers.d_batch_coef0, 0, coef_bytes));
+    CUDA_CHECK(cudaMemset(buffers.d_batch_coef1, 0, coef_bytes));
+    CUDA_CHECK(cudaMemset(buffers.d_batch_coef2, 0, coef_bytes));
     std::memset(buffers.h_samples_pinned, 0, samples_bytes);
 
     std::cout << "[GPU] GPU buffers allocated successfully" << std::endl;
@@ -162,24 +158,24 @@ void freeGPUBuffers(GPUBuffers& buffers) {
         buffers.d_batch_do_generate = nullptr;
     }
 
-    if (buffers.d_batch_frequencies) {
-        CUDA_CHECK_VOID(cudaFree(buffers.d_batch_frequencies));
-        buffers.d_batch_frequencies = nullptr;
-    }
-
     if (buffers.d_batch_amplitudes) {
         CUDA_CHECK_VOID(cudaFree(buffers.d_batch_amplitudes));
         buffers.d_batch_amplitudes = nullptr;
     }
 
-    if (buffers.d_batch_offset_phases_user) {
-        CUDA_CHECK_VOID(cudaFree(buffers.d_batch_offset_phases_user));
-        buffers.d_batch_offset_phases_user = nullptr;
+    if (buffers.d_batch_coef0) {
+        CUDA_CHECK_VOID(cudaFree(buffers.d_batch_coef0));
+        buffers.d_batch_coef0 = nullptr;
     }
 
-    if (buffers.d_temp_frequencies) {
-        CUDA_CHECK_VOID(cudaFree(buffers.d_temp_frequencies));
-        buffers.d_temp_frequencies = nullptr;
+    if (buffers.d_batch_coef1) {
+        CUDA_CHECK_VOID(cudaFree(buffers.d_batch_coef1));
+        buffers.d_batch_coef1 = nullptr;
+    }
+
+    if (buffers.d_batch_coef2) {
+        CUDA_CHECK_VOID(cudaFree(buffers.d_batch_coef2));
+        buffers.d_batch_coef2 = nullptr;
     }
 
     if (buffers.d_temp_amplitudes) {
@@ -187,24 +183,14 @@ void freeGPUBuffers(GPUBuffers& buffers) {
         buffers.d_temp_amplitudes = nullptr;
     }
 
-    if (buffers.d_temp_offset_phases_user) {
-        CUDA_CHECK_VOID(cudaFree(buffers.d_temp_offset_phases_user));
-        buffers.d_temp_offset_phases_user = nullptr;
+    if (buffers.d_temp_frequencies) {
+        CUDA_CHECK_VOID(cudaFree(buffers.d_temp_frequencies));
+        buffers.d_temp_frequencies = nullptr;
     }
 
-    if (buffers.d_temp_frequencies_fp64) {
-        CUDA_CHECK_VOID(cudaFree(buffers.d_temp_frequencies_fp64));
-        buffers.d_temp_frequencies_fp64 = nullptr;
-    }
-
-    if (buffers.d_batch_offset_phases) {
-        CUDA_CHECK_VOID(cudaFree(buffers.d_batch_offset_phases));
-        buffers.d_batch_offset_phases = nullptr;
-    }
-
-    if (buffers.d_batch_phase_corrections) {
-        CUDA_CHECK_VOID(cudaFree(buffers.d_batch_phase_corrections));
-        buffers.d_batch_phase_corrections = nullptr;
+    if (buffers.d_temp_offset_phases) {
+        CUDA_CHECK_VOID(cudaFree(buffers.d_temp_offset_phases));
+        buffers.d_temp_offset_phases = nullptr;
     }
 
     if (buffers.h_samples_pinned) {
@@ -226,20 +212,20 @@ void zeroGPUBuffers(GPUBuffers& buffers) {
     size_t batch_flags_bytes = (buffers.max_timesteps - 1) * sizeof(bool);
     size_t batch_arrays_bytes = buffers.batch_arrays_size * sizeof(float);
 
+    size_t coef_bytes = (buffers.max_timesteps - 1) *
+                        buffers.num_channels *
+                        buffers.num_tones * sizeof(float);
+
     CUDA_CHECK_VOID(cudaMemset(buffers.d_samples, 0, samples_bytes));
     CUDA_CHECK_VOID(cudaMemset(buffers.d_amplitudes, 0, tone_params_bytes));
     CUDA_CHECK_VOID(cudaMemset(buffers.d_phases, 0, tone_params_bytes));
     CUDA_CHECK_VOID(cudaMemset(buffers.d_frequencies, 0, tone_params_bytes));
     CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_timesteps, 0, batch_timesteps_bytes));
     CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_do_generate, 0, batch_flags_bytes));
-    CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_frequencies, 0, batch_arrays_bytes));
     CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_amplitudes, 0, batch_arrays_bytes));
-    CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_offset_phases_user, 0, batch_arrays_bytes));
-    CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_offset_phases, 0, batch_arrays_bytes));
-    size_t phase_corrections_bytes = (buffers.max_timesteps - 1) *
-                                      buffers.num_channels *
-                                      buffers.num_tones * sizeof(float);
-    CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_phase_corrections, 0, phase_corrections_bytes));
+    CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_coef0, 0, coef_bytes));
+    CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_coef1, 0, coef_bytes));
+    CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_coef2, 0, coef_bytes));
 
     if (buffers.h_samples_pinned) {
         std::memset(buffers.h_samples_pinned, 0, samples_bytes);
@@ -264,170 +250,8 @@ __global__ void validateAscendingKernel(const int32_t* timesteps,
     }
 }
 
-// Simple double→float conversion kernel (no striding)
-__global__ void convertFp64ToFp32Kernel(
-    const double* __restrict__ src,
-    float* __restrict__ dst,
-    int num_elements) {
-
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (idx < num_elements) {
-        dst[idx] = static_cast<float>(src[idx]);
-    }
-}
-
-// CUDA kernel to expand tones from double (compact) to float (padded)
-// Performs double→float conversion AND strided copy in single pass
-__global__ void expandTonesKernelFp64(
-    const double* __restrict__ src,  // Compact: [timestep][channel][num_tones], float64
-    float* __restrict__ dst,         // Expanded: [timestep][channel][max_tones], float32
-    int num_timesteps,
-    int num_channels,
-    int num_tones,
-    int max_tones,
-    int dst_offset) {
-
-    // Global thread index
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total_slices = num_timesteps * num_channels;
-
-    if (idx < total_slices) {
-        int t = idx / num_channels;
-        int ch = idx % num_channels;
-
-        // Source base index in compact array: [t][ch][tone]
-        int src_base = t * num_channels * num_tones + ch * num_tones;
-
-        // Destination base index in expanded array: [(dst_offset + t)][ch][tone]
-        int dst_base = (dst_offset + t) * num_channels * max_tones + ch * max_tones;
-
-        // Copy with conversion
-        for (int tone = 0; tone < num_tones; tone++) {
-            dst[dst_base + tone] = static_cast<float>(src[src_base + tone]);
-        }
-
-        // Zero-pad
-        for (int tone = num_tones; tone < max_tones; tone++) {
-            dst[dst_base + tone] = 0.0f;
-        }
-    }
-}
-
-// Compute offset phases with high-precision modulo operation
-// Formula: (2π * f * t) % (2π) + offset_phase_user
-// Uses double precision for phase calculation to avoid errors at high frequencies
-__global__ void computeOffsetPhasesKernel(
-    const float* __restrict__ d_frequencies,        // [timestep][channel][tone]
-    const float* __restrict__ d_offset_phases_user, // [timestep][channel][tone]
-    const int32_t* __restrict__ d_timesteps,        // [timestep]
-    float* __restrict__ d_offset_phases_out,        // [timestep][channel][tone]
-    int num_timesteps,
-    int num_channels,
-    int max_tones,
-    int target_offset,
-    double waveform_timestep,                       // WAVEFORM_TIMESTEP (samples)
-    double sample_rate) {                           // AWG_SAMPLE_RATE (Hz)
-
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total_elements = num_timesteps * num_channels * max_tones;
-
-    if (idx < total_elements) {
-        int t = idx / (num_channels * max_tones);
-        int remainder = idx % (num_channels * max_tones);
-        int ch = remainder / max_tones;
-        int tone = remainder % max_tones;
-
-        // Get timestep value from the array
-        int32_t timestep_value = d_timesteps[target_offset + t];
-
-        // Convert to physical time (seconds from batch start)
-        // Use double precision for accuracy
-        double t_seconds = static_cast<double>(timestep_value) *
-                           waveform_timestep / sample_rate;
-
-        // Get frequency (Hz) - convert to double for phase calculation
-        int freq_idx = (target_offset + t) * num_channels * max_tones +
-                       ch * max_tones + tone;
-        double f = static_cast<double>(d_frequencies[freq_idx]);
-
-        // Compute phase modulo term with double precision
-        const double TWO_PI = 6.283185307179586;
-        double phase_term = 2.0 * M_PI * f * t_seconds;
-        double phase_mod = fmod(phase_term, TWO_PI);  // High-precision modulo
-
-        // Get user-provided offset phase
-        float user_phase = d_offset_phases_user[freq_idx];
-
-        // Compute final phase (cast to float32 for storage)
-        float final_phase = static_cast<float>(phase_mod) + user_phase;
-
-        // Store in output
-        d_offset_phases_out[freq_idx] = final_phase;
-    }
-}
-
-// Compute phase corrections for frequency sweeps between timesteps
-// Formula: (π + delta_phi - delta_phi0) % (2π) - π
-// where delta_phi = π * (f2 - f1) * (t2 - t1), delta_phi0 is reference (tone 0)
-__global__ void computePhaseCorrectionKernel(
-    const float* __restrict__ d_frequencies,        // [timestep][channel][tone]
-    const int32_t* __restrict__ d_timesteps,        // [timestep]
-    float* __restrict__ d_phase_corrections,        // [timestep-1][channel][tone]
-    int num_timesteps,
-    int num_channels,
-    int max_tones,
-    int target_offset,
-    float waveform_timestep,                        // WAVEFORM_TIMESTEP (samples)
-    float sample_rate) {                            // AWG_SAMPLE_RATE (Hz)
-
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total_intervals = (num_timesteps - 1) * num_channels;
-
-    if (idx < total_intervals) {
-        int interval = idx / num_channels;  // Which timestep pair
-        int ch = idx % num_channels;
-
-        // Get consecutive timestep values
-        int32_t t1_value = d_timesteps[target_offset + interval];
-        int32_t t2_value = d_timesteps[target_offset + interval + 1];
-
-        // Convert to physical time difference (seconds)
-        float dt = static_cast<float>(t2_value - t1_value) *
-                   waveform_timestep / sample_rate;
-
-        // Base indices for frequencies at t1 and t2
-        int freq_base_t1 = (target_offset + interval) * num_channels * max_tones +
-                           ch * max_tones;
-        int freq_base_t2 = (target_offset + interval + 1) * num_channels * max_tones +
-                           ch * max_tones;
-
-        // Get reference (tone 0) delta_phi
-        float f1_tone0 = d_frequencies[freq_base_t1];
-        float f2_tone0 = d_frequencies[freq_base_t2];
-        float delta_phi0 = M_PI * (f2_tone0 - f1_tone0) * dt;
-
-        // Compute correction for all tones
-        for (int tone = 0; tone < max_tones; tone++) {
-            float f1 = d_frequencies[freq_base_t1 + tone];
-            float f2 = d_frequencies[freq_base_t2 + tone];
-
-            float delta_phi = M_PI * (f2 - f1) * dt;
-
-            // Phase correction formula: (π + delta_phi - delta_phi0) % (2π) - π
-            float correction = M_PI + delta_phi - delta_phi0;
-            correction = fmodf(correction, 2.0f * M_PI);  // Modulo 2π
-            correction -= M_PI;
-
-            // Store in output array [interval][channel][tone]
-            int out_idx = interval * num_channels * max_tones + ch * max_tones + tone;
-            d_phase_corrections[out_idx] = correction;
-        }
-    }
-}
-
-// CUDA kernel to expand tone arrays from num_tones to max_tones with zero-padding
-// Each thread handles one [timestep][channel] slice
+// Kernel to expand tone arrays from num_tones to max_tones with zero-padding
+// Used only for amplitudes now (frequencies/phases handled via coefficients)
 __global__ void expandTonesKernel(
     const float* __restrict__ src,  // Compact: [timestep][channel][num_tones]
     float* __restrict__ dst,        // Expanded: [timestep][channel][max_tones]
@@ -437,7 +261,6 @@ __global__ void expandTonesKernel(
     int max_tones,
     int dst_offset) {
 
-    // Global thread index
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int total_slices = num_timesteps * num_channels;
 
@@ -445,10 +268,7 @@ __global__ void expandTonesKernel(
         int t = idx / num_channels;
         int ch = idx % num_channels;
 
-        // Source base index in compact array: [t][ch][tone]
         int src_base = t * num_channels * num_tones + ch * num_tones;
-
-        // Destination base index in expanded array: [(dst_offset + t)][ch][tone]
         int dst_base = (dst_offset + t) * num_channels * max_tones + ch * max_tones;
 
         // Copy actual tones
@@ -456,9 +276,88 @@ __global__ void expandTonesKernel(
             dst[dst_base + tone] = src[src_base + tone];
         }
 
-        // Zero-pad remaining tones
+        // Zero-pad
         for (int tone = num_tones; tone < max_tones; tone++) {
             dst[dst_base + tone] = 0.0f;
+        }
+    }
+}
+
+// Compute polynomial coefficients for waveform generation
+// Coefficients encode frequency chirps and phase evolution for efficient interpolation
+__global__ void computeCoefficientsKernel(
+    const double* __restrict__ d_frequencies,       // [timestep][channel][tone] COMPACT
+    const float* __restrict__ d_offset_phases,      // [timestep][channel][tone] COMPACT
+    const int32_t* __restrict__ d_timesteps,        // [timestep]
+    float* __restrict__ d_coef0,                    // [interval][channel][tone]
+    float* __restrict__ d_coef1,                    // [interval][channel][tone]
+    float* __restrict__ d_coef2,                    // [interval][channel][tone]
+    int num_intervals,                              // num_timesteps - 1
+    int num_channels,
+    int max_tones,                                  // Output stride
+    int num_tones_actual,                           // Input stride (compact)
+    int target_offset,
+    double waveform_timestep,
+    double sample_rate) {
+
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total_work = num_intervals * num_channels;
+
+    if (idx < total_work) {
+        int interval = idx / num_channels;
+        int ch = idx % num_channels;
+
+        // Get timestep values
+        int32_t t1_val = d_timesteps[target_offset + interval];
+        int32_t t2_val = d_timesteps[target_offset + interval + 1];
+
+        // Convert to physical times (double precision)
+        double t1 = static_cast<double>(t1_val) * waveform_timestep / sample_rate;
+        double t2 = static_cast<double>(t2_val) * waveform_timestep / sample_rate;
+        double dt = t2 - t1;
+        double t_sum = t1 + t2;
+
+        // Base indices in GPU arrays [timestep][channel][tone]
+        int base_t1 = (target_offset + interval) * num_channels * max_tones + ch * max_tones;
+        int base_t2 = (target_offset + interval + 1) * num_channels * max_tones + ch * max_tones;
+
+        // Get reference (tone 0) values - double precision
+        double f1_ref = d_frequencies[base_t1];
+        double f2_ref = d_frequencies[base_t2];
+        double phi1_ref = static_cast<double>(d_offset_phases[base_t1]);
+        double phi2_ref = static_cast<double>(d_offset_phases[base_t2]);
+
+        // Compute reference psi(0)
+        const double TWO_PI = 6.283185307179586;
+        double psi_ref = M_PI * (f2_ref - f1_ref) * t_sum + phi2_ref - phi1_ref;
+
+        // Compute coefficients for all tones
+        for (int tone = 0; tone < max_tones; tone++) {
+            double f1 = d_frequencies[base_t1 + tone];
+            double f2 = d_frequencies[base_t2 + tone];
+            double phi1 = static_cast<double>(d_offset_phases[base_t1 + tone]);
+            double phi2 = static_cast<double>(d_offset_phases[base_t2 + tone]);
+
+            // Compute psi and delta_psi
+            double psi = M_PI * (f2 - f1) * t_sum + phi2 - phi1;
+            double delta_psi = psi - psi_ref;
+
+            // Coef0: (2π*f1*t1 + phi1) % (2π)
+            double coef0_d = 2.0 * M_PI * f1 * t1 + phi1;
+            coef0_d = fmod(coef0_d, TWO_PI);
+
+            // Coef1: (delta_psi+π)%(2π) - π + 2π*f1*dt
+            double term1 = fmod(delta_psi + M_PI, TWO_PI) - M_PI;
+            double coef1_d = term1 + 2.0 * M_PI * f1 * dt;
+
+            // Coef2: π*(f2-f1)*dt
+            double coef2_d = M_PI * (f2 - f1) * dt;
+
+            // Cast to float32 and store [interval][channel][tone]
+            int out_idx = interval * num_channels * max_tones + ch * max_tones + tone;
+            d_coef0[out_idx] = static_cast<float>(coef0_d);
+            d_coef1[out_idx] = static_cast<float>(coef1_d);
+            d_coef2[out_idx] = static_cast<float>(coef2_d);
         }
     }
 }
@@ -490,173 +389,108 @@ void uploadBatchDataToGPU(GPUBuffers& buffers,
         return;
     }
 
-    // Copy timesteps and do_generate directly (no padding needed)
+    // Step 1: Upload timesteps and do_generate
     size_t timesteps_bytes = num_timesteps * sizeof(int32_t);
     size_t flags_bytes = (num_timesteps - 1) * sizeof(uint8_t);
 
     auto t_simple_start = std::chrono::high_resolution_clock::now();
     CUDA_CHECK_VOID(cudaMemcpy(buffers.d_batch_timesteps + target_offset,
-                               h_timesteps,
-                               timesteps_bytes,
-                               cudaMemcpyHostToDevice));
+                               h_timesteps, timesteps_bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK_VOID(cudaMemcpy(buffers.d_batch_do_generate + target_offset,
-                               h_do_generate,
-                               flags_bytes,
-                               cudaMemcpyHostToDevice));
+                               h_do_generate, flags_bytes, cudaMemcpyHostToDevice));
     auto t_simple_end = std::chrono::high_resolution_clock::now();
-    auto simple_us = std::chrono::duration_cast<std::chrono::microseconds>(t_simple_end - t_simple_start).count();
+    auto simple_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        t_simple_end - t_simple_start).count();
 
-    // For frequency/amplitude/phase arrays: do strided copy to pad num_tones → AOD_MAX_TONES
-    // Client data layout: [timestep][channel][num_tones]
-    // GPU data layout: [timestep][channel][AOD_MAX_TONES]
-
-    auto t_tones_start = std::chrono::high_resolution_clock::now();
+    // Step 2: Upload amplitudes (with striding if needed)
+    auto t_amp_start = std::chrono::high_resolution_clock::now();
+    int offset_elements = target_offset * num_channels * max_tones;
 
     if (num_tones == max_tones) {
-        // No padding needed - but still need double→float conversion for frequencies
-        size_t arrays_elements = num_timesteps * num_channels * num_tones;
-        size_t arrays_bytes_fp32 = arrays_elements * sizeof(float);
-        size_t arrays_bytes_fp64 = arrays_elements * sizeof(double);
-        int offset_elements = target_offset * num_channels * max_tones;
-
-        // Copy double frequencies to temp buffer, then convert to float32
-        CUDA_CHECK_VOID(cudaMemcpy(buffers.d_temp_frequencies_fp64, h_frequencies,
-                                   arrays_bytes_fp64, cudaMemcpyHostToDevice));
-
-        // Launch conversion kernel
-        int block_size = 256;
-        int grid_size = (arrays_elements + block_size - 1) / block_size;
-        convertFp64ToFp32Kernel<<<grid_size, block_size>>>(
-            buffers.d_temp_frequencies_fp64,
-            buffers.d_batch_frequencies + offset_elements,
-            arrays_elements);
-        CUDA_CHECK_VOID(cudaDeviceSynchronize());
-
-        // Amplitudes and phases remain float32 (direct copy)
+        // Direct copy
+        size_t arrays_bytes = num_timesteps * num_channels * num_tones * sizeof(float);
         CUDA_CHECK_VOID(cudaMemcpy(buffers.d_batch_amplitudes + offset_elements,
-                                   h_amplitudes, arrays_bytes_fp32, cudaMemcpyHostToDevice));
-        CUDA_CHECK_VOID(cudaMemcpy(buffers.d_batch_offset_phases_user + offset_elements,
-                                   h_offset_phases_user, arrays_bytes_fp32, cudaMemcpyHostToDevice));
+                                   h_amplitudes, arrays_bytes, cudaMemcpyHostToDevice));
     } else {
-        // GPU-accelerated striding: copy compact data then expand on GPU
-
-        // 1. Copy compact data to temp buffers (smaller transfer)
-        size_t compact_elements = num_timesteps * num_channels * num_tones;
-        size_t compact_bytes_fp32 = compact_elements * sizeof(float);
-        size_t compact_bytes_fp64 = compact_elements * sizeof(double);
-
-        auto t_compact_copy_start = std::chrono::high_resolution_clock::now();
-        // Frequencies: copy as double to fp64 temp buffer
-        CUDA_CHECK_VOID(cudaMemcpy(buffers.d_temp_frequencies_fp64, h_frequencies,
-                                   compact_bytes_fp64, cudaMemcpyHostToDevice));
-        // Amplitudes and phases: copy as float to temp buffers
+        // Strided copy via temp buffer + expansion kernel
+        size_t compact_bytes = num_timesteps * num_channels * num_tones * sizeof(float);
         CUDA_CHECK_VOID(cudaMemcpy(buffers.d_temp_amplitudes, h_amplitudes,
-                                   compact_bytes_fp32, cudaMemcpyHostToDevice));
-        CUDA_CHECK_VOID(cudaMemcpy(buffers.d_temp_offset_phases_user, h_offset_phases_user,
-                                   compact_bytes_fp32, cudaMemcpyHostToDevice));
-        auto t_compact_copy_end = std::chrono::high_resolution_clock::now();
-        auto compact_copy_us = std::chrono::duration_cast<std::chrono::microseconds>(
-            t_compact_copy_end - t_compact_copy_start).count();
+                                   compact_bytes, cudaMemcpyHostToDevice));
 
-        // 2. Launch kernels to expand in parallel
         int total_slices = num_timesteps * num_channels;
         int block_size = 256;
         int grid_size = (total_slices + block_size - 1) / block_size;
-
-        auto t_kernel_start = std::chrono::high_resolution_clock::now();
-        // Frequencies: use fp64 kernel (converts double→float AND expands)
-        expandTonesKernelFp64<<<grid_size, block_size>>>(
-            buffers.d_temp_frequencies_fp64, buffers.d_batch_frequencies,
-            num_timesteps, num_channels, num_tones, max_tones, target_offset);
-        // Amplitudes and phases: use existing float32 kernel
         expandTonesKernel<<<grid_size, block_size>>>(
             buffers.d_temp_amplitudes, buffers.d_batch_amplitudes,
             num_timesteps, num_channels, num_tones, max_tones, target_offset);
-        expandTonesKernel<<<grid_size, block_size>>>(
-            buffers.d_temp_offset_phases_user, buffers.d_batch_offset_phases_user,
-            num_timesteps, num_channels, num_tones, max_tones, target_offset);
-
         CUDA_CHECK_VOID(cudaDeviceSynchronize());
-        auto t_kernel_end = std::chrono::high_resolution_clock::now();
-        auto kernel_us = std::chrono::duration_cast<std::chrono::microseconds>(
-            t_kernel_end - t_kernel_start).count();
-
-        std::cout << "[GPU]   ├─ Compact copy: " << compact_copy_us << " μs" << std::endl;
-        std::cout << "[GPU]   └─ Kernel expand: " << kernel_us << " μs" << std::endl;
     }
 
-    auto t_tones_end = std::chrono::high_resolution_clock::now();
-    auto tones_us = std::chrono::duration_cast<std::chrono::microseconds>(t_tones_end - t_tones_start).count();
+    auto t_amp_end = std::chrono::high_resolution_clock::now();
+    auto amp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        t_amp_end - t_amp_start).count();
 
-    // ===== PHASE COMPUTATION =====
-    auto t_phase_start = std::chrono::high_resolution_clock::now();
+    // Step 3: Upload freq/phase to temp buffers (compact layout)
+    auto t_temp_start = std::chrono::high_resolution_clock::now();
 
-    // Get configuration constants
+    // Upload in compact form - coefficient kernel handles padding internally
+    size_t compact_elements = num_timesteps * num_channels * num_tones;
+    size_t compact_freq_bytes = compact_elements * sizeof(double);
+    size_t compact_phase_bytes = compact_elements * sizeof(float);
+
+    CUDA_CHECK_VOID(cudaMemcpy(buffers.d_temp_frequencies, h_frequencies,
+                               compact_freq_bytes, cudaMemcpyHostToDevice));
+    CUDA_CHECK_VOID(cudaMemcpy(buffers.d_temp_offset_phases, h_offset_phases_user,
+                               compact_phase_bytes, cudaMemcpyHostToDevice));
+
+    auto t_temp_end = std::chrono::high_resolution_clock::now();
+    auto temp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        t_temp_end - t_temp_start).count();
+
+    // Step 4: Compute polynomial coefficients
+    auto t_coef_start = std::chrono::high_resolution_clock::now();
+
     double waveform_timestep_d = static_cast<double>(config::WAVEFORM_TIMESTEP);
     double sample_rate_d = static_cast<double>(config::AWG_SAMPLE_RATE);
-    float waveform_timestep_f = static_cast<float>(config::WAVEFORM_TIMESTEP);
-    float sample_rate_f = static_cast<float>(config::AWG_SAMPLE_RATE);
 
-    // Kernel 1: Compute offset phases
-    int total_phase_elements = num_timesteps * num_channels * max_tones;
-    int phase_block_size = 256;
-    int phase_grid_size = (total_phase_elements + phase_block_size - 1) / phase_block_size;
+    int num_intervals = num_timesteps - 1;
+    int total_work = num_intervals * num_channels;
+    int block_size = 256;
+    int grid_size = (total_work + block_size - 1) / block_size;
 
-    computeOffsetPhasesKernel<<<phase_grid_size, phase_block_size>>>(
-        buffers.d_batch_frequencies,
-        buffers.d_batch_offset_phases_user,
+    computeCoefficientsKernel<<<grid_size, block_size>>>(
+        buffers.d_temp_frequencies,
+        buffers.d_temp_offset_phases,
         buffers.d_batch_timesteps,
-        buffers.d_batch_offset_phases,
-        num_timesteps,
+        buffers.d_batch_coef0,
+        buffers.d_batch_coef1,
+        buffers.d_batch_coef2,
+        num_intervals,
         num_channels,
         max_tones,
+        num_tones,  // Pass actual num_tones for compact indexing
         target_offset,
         waveform_timestep_d,
         sample_rate_d);
 
     CUDA_CHECK_VOID(cudaDeviceSynchronize());
 
-    auto t_phase_mid = std::chrono::high_resolution_clock::now();
-
-    // Kernel 2: Compute phase corrections
-    int total_corrections = (num_timesteps - 1) * num_channels;
-    int corr_block_size = 256;
-    int corr_grid_size = (total_corrections + corr_block_size - 1) / corr_block_size;
-
-    computePhaseCorrectionKernel<<<corr_grid_size, corr_block_size>>>(
-        buffers.d_batch_frequencies,
-        buffers.d_batch_timesteps,
-        buffers.d_batch_phase_corrections,
-        num_timesteps,
-        num_channels,
-        max_tones,
-        target_offset,
-        waveform_timestep_f,
-        sample_rate_f);
-
-    CUDA_CHECK_VOID(cudaDeviceSynchronize());
-
-    auto t_phase_end = std::chrono::high_resolution_clock::now();
-    auto phase_compute_us = std::chrono::duration_cast<std::chrono::microseconds>(
-        t_phase_mid - t_phase_start).count();
-    auto correction_us = std::chrono::duration_cast<std::chrono::microseconds>(
-        t_phase_end - t_phase_mid).count();
-    auto phase_total_us = std::chrono::duration_cast<std::chrono::microseconds>(
-        t_phase_end - t_phase_start).count();
+    auto t_coef_end = std::chrono::high_resolution_clock::now();
+    auto coef_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        t_coef_end - t_coef_start).count();
 
     auto t_total_end = std::chrono::high_resolution_clock::now();
-    auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(t_total_end - t_start).count();
+    auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        t_total_end - t_start).count();
 
     std::cout << "[GPU] Uploaded " << num_timesteps << " timesteps to GPU at offset "
               << target_offset << " (tones: " << num_tones << " → " << max_tones << ")" << std::endl;
-    std::cout << "[GPU] ─── GPU Copy Timing ───" << std::endl;
-    std::cout << "[GPU]   Timesteps/flags:   " << simple_us << " μs" << std::endl;
-    std::cout << "[GPU]   Tone arrays:       " << tones_us << " μs "
-              << (num_tones == max_tones ? "(direct)" : "(strided+padded)") << std::endl;
-    std::cout << "[GPU]   Phase computation: " << phase_total_us << " μs" << std::endl;
-    std::cout << "[GPU]     ├─ Offset phases:   " << phase_compute_us << " μs" << std::endl;
-    std::cout << "[GPU]     └─ Corrections:     " << correction_us << " μs" << std::endl;
-    std::cout << "[GPU]   Total GPU upload:  " << total_us << " μs" << std::endl;
+    std::cout << "[GPU] ─── GPU Upload Timing ───" << std::endl;
+    std::cout << "[GPU]   Timesteps/flags:     " << simple_us << " μs" << std::endl;
+    std::cout << "[GPU]   Amplitudes:          " << amp_us << " μs" << std::endl;
+    std::cout << "[GPU]   Temp freq/phase:     " << temp_us << " μs" << std::endl;
+    std::cout << "[GPU]   Coefficient compute: " << coef_us << " μs" << std::endl;
+    std::cout << "[GPU]   Total GPU upload:    " << total_us << " μs" << std::endl;
     std::cout << "[GPU] ─────────────────────────" << std::endl;
 }
 
