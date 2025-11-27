@@ -12,9 +12,6 @@ namespace aod {
 struct GPUBuffers {
     // Device memory (GPU)
     int16_t* d_samples;           // Output waveform samples
-    float* d_amplitudes;          // Tone amplitudes [chunk][channel][tone]
-    float* d_phases;              // Tone phases [chunk][channel][tone]
-    float* d_frequencies;         // Tone frequencies [chunk][channel][tone]
 
     // Batch data arrays (global timeline combining all batches)
     int32_t* d_batch_timesteps;   // Timesteps array [timestep]
@@ -36,23 +33,17 @@ struct GPUBuffers {
     int16_t* h_samples_pinned;    // For DMA transfers to AWG
 
     // Buffer dimensions
-    size_t num_chunks;            // Number of waveform chunks
     size_t num_channels;          // Number of active AWG channels
     size_t num_tones;             // Maximum tones per channel
-    size_t timestep;              // Samples per chunk
     size_t max_timesteps;         // Maximum timesteps in batch arrays
 
     // Computed sizes
     size_t total_samples;         // Total int16 samples
-    size_t tone_params_size;      // Size of each tone parameter array (amp/phase/freq)
-    size_t batch_arrays_size;     // Size of batch frequency/amplitude/phase arrays
+    size_t batch_arrays_size;     // Size of batch amplitude/coefficient arrays
 
     // Constructor
     GPUBuffers()
         : d_samples(nullptr),
-          d_amplitudes(nullptr),
-          d_phases(nullptr),
-          d_frequencies(nullptr),
           d_batch_timesteps(nullptr),
           d_batch_do_generate(nullptr),
           d_batch_amplitudes(nullptr),
@@ -63,13 +54,10 @@ struct GPUBuffers {
           d_temp_frequencies(nullptr),
           d_temp_offset_phases(nullptr),
           h_samples_pinned(nullptr),
-          num_chunks(0),
           num_channels(0),
           num_tones(0),
-          timestep(0),
           max_timesteps(0),
           total_samples(0),
-          tone_params_size(0),
           batch_arrays_size(0) {}
 };
 

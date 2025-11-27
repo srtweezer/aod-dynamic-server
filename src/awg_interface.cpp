@@ -402,13 +402,6 @@ bool AWGInterface::initializeAWG(const std::vector<int32>& amplitudes_mv) {
     }
 
     size_t pinned_samples_per_channel = pinned_total_samples / num_channels;
-    if (pinned_samples_per_channel % WAVEFORM_TIMESTEP != 0) {
-        std::string error = "Pinned buffer samples per channel (" + std::to_string(pinned_samples_per_channel) +
-                           ") must be multiple of WAVEFORM_TIMESTEP (" + std::to_string(WAVEFORM_TIMESTEP) + ")";
-        std::cerr << "[AWG Thread] " << error << std::endl;
-        last_result_ = CommandResult{false, error};
-        return false;
-    }
 
     // Validate notify size
     if (notify_size_ % 2 != 0) {
@@ -428,18 +421,9 @@ bool AWGInterface::initializeAWG(const std::vector<int32>& amplitudes_mv) {
     }
 
     size_t notify_samples_per_channel = notify_total_samples / num_channels;
-    if (notify_samples_per_channel % WAVEFORM_TIMESTEP != 0) {
-        std::string error = "Notify size samples per channel (" + std::to_string(notify_samples_per_channel) +
-                           ") must be multiple of WAVEFORM_TIMESTEP (" + std::to_string(WAVEFORM_TIMESTEP) + ")";
-        std::cerr << "[AWG Thread] " << error << std::endl;
-        last_result_ = CommandResult{false, error};
-        return false;
-    }
 
     // Calculate and log buffer characteristics
-    size_t timesteps_per_channel = pinned_samples_per_channel / WAVEFORM_TIMESTEP;
     double buffer_duration_us = (double)pinned_samples_per_channel / AWG_SAMPLE_RATE * 1e6;
-    size_t notify_timesteps = notify_samples_per_channel / WAVEFORM_TIMESTEP;
     double notify_duration_us = (double)notify_samples_per_channel / AWG_SAMPLE_RATE * 1e6;
 
     std::cout << "[AWG Thread] ═══════════════════════════════════════════════════" << std::endl;
@@ -447,7 +431,6 @@ bool AWGInterface::initializeAWG(const std::vector<int32>& amplitudes_mv) {
     std::cout << "[AWG Thread]   Size: " << pinned_buffer_bytes / (1024*1024) << " MB" << std::endl;
     std::cout << "[AWG Thread]   Total samples: " << pinned_total_samples << std::endl;
     std::cout << "[AWG Thread]   Samples per channel: " << pinned_samples_per_channel << std::endl;
-    std::cout << "[AWG Thread]   Timesteps (per channel): " << timesteps_per_channel << std::endl;
     std::cout << "[AWG Thread]   Duration: " << buffer_duration_us / 1000.0 << " ms"
               << " (" << buffer_duration_us / 1e6 << " s)" << std::endl;
     std::cout << "[AWG Thread] ───────────────────────────────────────────────────" << std::endl;
@@ -455,7 +438,6 @@ bool AWGInterface::initializeAWG(const std::vector<int32>& amplitudes_mv) {
     std::cout << "[AWG Thread]   Size: " << notify_size_ / 1024 << " KB" << std::endl;
     std::cout << "[AWG Thread]   Total samples: " << notify_total_samples << std::endl;
     std::cout << "[AWG Thread]   Samples per channel: " << notify_samples_per_channel << std::endl;
-    std::cout << "[AWG Thread]   Timesteps (per channel): " << notify_timesteps << std::endl;
     std::cout << "[AWG Thread]   Duration: " << notify_duration_us << " μs"
               << " (" << notify_duration_us / 1000.0 << " ms)" << std::endl;
     std::cout << "[AWG Thread] ═══════════════════════════════════════════════════" << std::endl;
@@ -950,9 +932,13 @@ bool AWGInterface::playBatch(int batch_id) {
     std::cout << "[AWG Thread]   Max timestep value (duration): " << max_timestep_value << std::endl;
     std::cout << "[AWG Thread]   Trigger: " << trigger_type << std::endl;
 
-    // Calculate total waveform size using max timestep value (NOT num_timesteps!)
+    // Calculate total waveform size using max timestep value (now in samples)
     int num_channels = __builtin_popcount(AWG_CHANNEL_MASK);
-    size_t samples_per_channel = max_timestep_value * WAVEFORM_TIMESTEP;
+    size_t samples_per_channel = max_timestep_value;  // Timesteps are now sample indices
+
+    // Pad to next multiple of 32 samples for DMA alignment
+    samples_per_channel = ((samples_per_channel + 31) / 32) * 32;
+
     size_t total_samples = samples_per_channel * num_channels;
     size_t waveform_size_bytes = total_samples * sizeof(int16_t);
 

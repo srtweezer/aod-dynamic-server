@@ -38,50 +38,41 @@ bool allocateGPUBuffers(GPUBuffers& buffers) {
     // Calculate dimensions
     buffers.num_channels = __builtin_popcount(AWG_CHANNEL_MASK);
     buffers.num_tones = AOD_MAX_TONES;
-    buffers.timestep = WAVEFORM_TIMESTEP;
     buffers.max_timesteps = MAX_WAVEFORM_TIMESTEPS;
 
     // Calculate sizes
-    // AOD_DMA_BUFFER_SIZE is total bytes for ALL channels combined
-    buffers.total_samples = AOD_DMA_BUFFER_SIZE / sizeof(int16_t);  // Total int16 samples across all channels
-    buffers.num_chunks = buffers.total_samples / (buffers.num_channels * buffers.timestep);  // Chunks across all channels
-    buffers.tone_params_size = buffers.num_chunks * buffers.num_channels * buffers.num_tones;
+    buffers.total_samples = AOD_DMA_BUFFER_SIZE / sizeof(int16_t);
     buffers.batch_arrays_size = buffers.max_timesteps * buffers.num_channels * buffers.num_tones;
 
     std::cout << "[GPU] Buffer dimensions:" << std::endl;
-    std::cout << "[GPU]   Chunks: " << buffers.num_chunks << std::endl;
     std::cout << "[GPU]   Channels: " << buffers.num_channels << std::endl;
     std::cout << "[GPU]   Tones per channel: " << buffers.num_tones << std::endl;
-    std::cout << "[GPU]   Timestep: " << buffers.timestep << " samples" << std::endl;
-    std::cout << "[GPU]   Max batch timesteps: " << buffers.max_timesteps << std::endl;
+    std::cout << "[GPU]   Max timesteps: " << buffers.max_timesteps << " (sample indices)" << std::endl;
+    std::cout << "[GPU]   Total DMA samples: " << buffers.total_samples << std::endl;
 
     // Calculate memory sizes
     size_t samples_bytes = buffers.total_samples * sizeof(int16_t);
-    size_t tone_params_bytes = buffers.tone_params_size * sizeof(float);
     size_t batch_timesteps_bytes = buffers.max_timesteps * sizeof(int32_t);
     size_t batch_flags_bytes = (buffers.max_timesteps - 1) * sizeof(bool);
     size_t batch_arrays_bytes = buffers.batch_arrays_size * sizeof(float);
 
+    size_t coef_bytes = (buffers.max_timesteps - 1) * buffers.num_channels * buffers.num_tones * sizeof(float);
+    size_t temp_freq_bytes = buffers.batch_arrays_size * sizeof(double);
+    size_t temp_phase_bytes = buffers.batch_arrays_size * sizeof(float);
+
     std::cout << "[GPU] Memory allocation:" << std::endl;
     std::cout << "[GPU]   Output samples: " << samples_bytes / (1024*1024) << " MB" << std::endl;
-    std::cout << "[GPU]   Amplitudes: " << tone_params_bytes / (1024*1024) << " MB" << std::endl;
-    std::cout << "[GPU]   Phases: " << tone_params_bytes / (1024*1024) << " MB" << std::endl;
-    std::cout << "[GPU]   Frequencies: " << tone_params_bytes / (1024*1024) << " MB" << std::endl;
+    std::cout << "[GPU]   Batch amplitudes: " << batch_arrays_bytes / (1024*1024) << " MB" << std::endl;
+    std::cout << "[GPU]   Batch coefficients (each): " << coef_bytes / (1024*1024) << " MB" << std::endl;
     std::cout << "[GPU]   Batch timesteps: " << batch_timesteps_bytes / 1024 << " KB" << std::endl;
     std::cout << "[GPU]   Batch flags: " << batch_flags_bytes / 1024 << " KB" << std::endl;
-    std::cout << "[GPU]   Batch freq/amp/phase (each): " << batch_arrays_bytes / (1024*1024) << " MB" << std::endl;
-    std::cout << "[GPU]   Temp buffers (each): " << batch_arrays_bytes / (1024*1024) << " MB" << std::endl;
-    std::cout << "[GPU]   Total device: " << (samples_bytes + 3 * tone_params_bytes +
-                                                batch_timesteps_bytes + batch_flags_bytes +
-                                                6 * batch_arrays_bytes) / (1024*1024) << " MB" << std::endl;
+    std::cout << "[GPU]   Temp freq: " << temp_freq_bytes / (1024*1024) << " MB" << std::endl;
+    std::cout << "[GPU]   Temp phase: " << temp_phase_bytes / (1024*1024) << " MB" << std::endl;
     std::cout << "[GPU]   Pinned host: " << samples_bytes / (1024*1024) << " MB" << std::endl;
 
     // Allocate device memory
     std::cout << "[GPU] Allocating device memory..." << std::endl;
     CUDA_CHECK(cudaMalloc(&buffers.d_samples, samples_bytes));
-    CUDA_CHECK(cudaMalloc(&buffers.d_amplitudes, tone_params_bytes));
-    CUDA_CHECK(cudaMalloc(&buffers.d_phases, tone_params_bytes));
-    CUDA_CHECK(cudaMalloc(&buffers.d_frequencies, tone_params_bytes));
 
     // Allocate batch data arrays
     CUDA_CHECK(cudaMalloc(&buffers.d_batch_timesteps, batch_timesteps_bytes));
@@ -89,17 +80,12 @@ bool allocateGPUBuffers(GPUBuffers& buffers) {
     CUDA_CHECK(cudaMalloc(&buffers.d_batch_amplitudes, batch_arrays_bytes));
 
     // Allocate coefficient arrays [interval][channel][tone]
-    size_t coef_bytes = (buffers.max_timesteps - 1) *
-                        buffers.num_channels *
-                        buffers.num_tones * sizeof(float);
     CUDA_CHECK(cudaMalloc(&buffers.d_batch_coef0, coef_bytes));
     CUDA_CHECK(cudaMalloc(&buffers.d_batch_coef1, coef_bytes));
     CUDA_CHECK(cudaMalloc(&buffers.d_batch_coef2, coef_bytes));
 
     // Allocate temporary buffers
     CUDA_CHECK(cudaMalloc(&buffers.d_temp_amplitudes, batch_arrays_bytes));
-    size_t temp_freq_bytes = buffers.batch_arrays_size * sizeof(double);
-    size_t temp_phase_bytes = buffers.batch_arrays_size * sizeof(float);
     CUDA_CHECK(cudaMalloc(&buffers.d_temp_frequencies, temp_freq_bytes));
     CUDA_CHECK(cudaMalloc(&buffers.d_temp_offset_phases, temp_phase_bytes));
 
@@ -110,9 +96,6 @@ bool allocateGPUBuffers(GPUBuffers& buffers) {
     // Zero all buffers initially
     std::cout << "[GPU] Zeroing buffers..." << std::endl;
     CUDA_CHECK(cudaMemset(buffers.d_samples, 0, samples_bytes));
-    CUDA_CHECK(cudaMemset(buffers.d_amplitudes, 0, tone_params_bytes));
-    CUDA_CHECK(cudaMemset(buffers.d_phases, 0, tone_params_bytes));
-    CUDA_CHECK(cudaMemset(buffers.d_frequencies, 0, tone_params_bytes));
     CUDA_CHECK(cudaMemset(buffers.d_batch_timesteps, 0, batch_timesteps_bytes));
     CUDA_CHECK(cudaMemset(buffers.d_batch_do_generate, 0, batch_flags_bytes));
     CUDA_CHECK(cudaMemset(buffers.d_batch_amplitudes, 0, batch_arrays_bytes));
@@ -131,21 +114,6 @@ void freeGPUBuffers(GPUBuffers& buffers) {
     if (buffers.d_samples) {
         CUDA_CHECK_VOID(cudaFree(buffers.d_samples));
         buffers.d_samples = nullptr;
-    }
-
-    if (buffers.d_amplitudes) {
-        CUDA_CHECK_VOID(cudaFree(buffers.d_amplitudes));
-        buffers.d_amplitudes = nullptr;
-    }
-
-    if (buffers.d_phases) {
-        CUDA_CHECK_VOID(cudaFree(buffers.d_phases));
-        buffers.d_phases = nullptr;
-    }
-
-    if (buffers.d_frequencies) {
-        CUDA_CHECK_VOID(cudaFree(buffers.d_frequencies));
-        buffers.d_frequencies = nullptr;
     }
 
     if (buffers.d_batch_timesteps) {
@@ -207,19 +175,14 @@ void zeroGPUBuffers(GPUBuffers& buffers) {
     }
 
     size_t samples_bytes = buffers.total_samples * sizeof(int16_t);
-    size_t tone_params_bytes = buffers.tone_params_size * sizeof(float);
     size_t batch_timesteps_bytes = buffers.max_timesteps * sizeof(int32_t);
     size_t batch_flags_bytes = (buffers.max_timesteps - 1) * sizeof(bool);
     size_t batch_arrays_bytes = buffers.batch_arrays_size * sizeof(float);
-
     size_t coef_bytes = (buffers.max_timesteps - 1) *
                         buffers.num_channels *
                         buffers.num_tones * sizeof(float);
 
     CUDA_CHECK_VOID(cudaMemset(buffers.d_samples, 0, samples_bytes));
-    CUDA_CHECK_VOID(cudaMemset(buffers.d_amplitudes, 0, tone_params_bytes));
-    CUDA_CHECK_VOID(cudaMemset(buffers.d_phases, 0, tone_params_bytes));
-    CUDA_CHECK_VOID(cudaMemset(buffers.d_frequencies, 0, tone_params_bytes));
     CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_timesteps, 0, batch_timesteps_bytes));
     CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_do_generate, 0, batch_flags_bytes));
     CUDA_CHECK_VOID(cudaMemset(buffers.d_batch_amplitudes, 0, batch_arrays_bytes));
@@ -288,7 +251,7 @@ __global__ void expandTonesKernel(
 __global__ void computeCoefficientsKernel(
     const double* __restrict__ d_frequencies,       // [timestep][channel][tone] COMPACT
     const float* __restrict__ d_offset_phases,      // [timestep][channel][tone] COMPACT
-    const int32_t* __restrict__ d_timesteps,        // [timestep]
+    const int32_t* __restrict__ d_timesteps,        // [timestep] in SAMPLES
     float* __restrict__ d_coef0,                    // [interval][channel][tone]
     float* __restrict__ d_coef1,                    // [interval][channel][tone]
     float* __restrict__ d_coef2,                    // [interval][channel][tone]
@@ -297,7 +260,6 @@ __global__ void computeCoefficientsKernel(
     int max_tones,                                  // Output stride
     int num_tones_actual,                           // Input stride (compact)
     int target_offset,
-    double waveform_timestep,
     double sample_rate) {
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -311,9 +273,9 @@ __global__ void computeCoefficientsKernel(
         int32_t t1_val = d_timesteps[target_offset + interval];
         int32_t t2_val = d_timesteps[target_offset + interval + 1];
 
-        // Convert to physical times (double precision)
-        double t1 = static_cast<double>(t1_val) * waveform_timestep / sample_rate;
-        double t2 = static_cast<double>(t2_val) * waveform_timestep / sample_rate;
+        // Convert sample indices to physical times (double precision)
+        double t1 = static_cast<double>(t1_val) / sample_rate;
+        double t2 = static_cast<double>(t2_val) / sample_rate;
         double dt = t2 - t1;
         double t_sum = t1 + t2;
 
@@ -450,7 +412,6 @@ void uploadBatchDataToGPU(GPUBuffers& buffers,
     // Step 4: Compute polynomial coefficients
     auto t_coef_start = std::chrono::high_resolution_clock::now();
 
-    double waveform_timestep_d = static_cast<double>(config::WAVEFORM_TIMESTEP);
     double sample_rate_d = static_cast<double>(config::AWG_SAMPLE_RATE);
 
     int num_intervals = num_timesteps - 1;
@@ -470,7 +431,6 @@ void uploadBatchDataToGPU(GPUBuffers& buffers,
         max_tones,
         num_tones,  // Pass actual num_tones for compact indexing
         target_offset,
-        waveform_timestep_d,
         sample_rate_d);
 
     CUDA_CHECK_VOID(cudaDeviceSynchronize());

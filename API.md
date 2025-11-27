@@ -38,6 +38,34 @@ do_generate = np.ones(num_timesteps - 1, dtype=np.uint8)
 - Shared memory requirement increases by ~100 MB for frequency arrays (in default configuration)
 - ZMQ message size increases by ~48 MB per batch (frequency array doubles in size)
 
+### Version 3.0: WAVEFORM_TIMESTEP Removal
+
+**BREAKING CHANGE**: Timesteps now represent direct sample indices
+
+- **OLD**: `timesteps[i]` in units of WAVEFORM_TIMESTEP (512 samples)
+  - Example: timesteps=[0, 100] → samples=[0, 51200]
+- **NEW**: `timesteps[i]` in units of samples
+  - Example: timesteps=[0, 51200] → samples=[0, 51200]
+
+**Migration**:
+```python
+# OLD:
+timesteps = np.array([0, 100, 250], dtype=np.int32)  # Logical timesteps
+
+# NEW:
+SAMPLES_PER_UNIT = 512  # Optional: define on client if you want same granularity
+timesteps = np.array([0, 100*512, 250*512], dtype=np.int32)  # Sample indices
+# Or work directly in samples:
+timesteps = np.array([0, 51200, 128000], dtype=np.int32)
+```
+
+**Benefits**:
+- Finer granularity - can specify waveforms at sample-level precision
+- Simpler architecture - no multiplication layer
+- More direct mapping to physical time
+
+**Note**: Waveforms are automatically padded to 32-sample alignment for DMA compatibility
+
 ---
 
 ## Communication Protocol
@@ -331,8 +359,10 @@ Upload a pre-flattened timeline of waveform data directly to GPU.
 
 **Part 1 - timesteps (int32):**
 - Shape: `[num_timesteps]`
-- Units: WAVEFORM_TIMESTEP (compile-time config, typically 512 samples)
-- Description: Time coordinate for each timestep
+- Units: **Samples** (direct sample indices)
+- Description: Sample index for each timestep
+- Example: For 200 MHz sample rate, timestep=1000 means 5 microseconds (1000 / 200e6)
+- Note: Waveforms are automatically padded to 32-sample alignment for hardware DMA
 
 **Part 2 - do_generate (uint8):**
 - Shape: `[num_timesteps - 1]` (**BREAKING CHANGE: was num_timesteps**)
@@ -947,13 +977,11 @@ Key compile-time configuration parameters from `config.cmake`:
 
 ```cmake
 # Maximum timesteps in global waveform batch arrays
+# Timesteps are now direct sample indices
 set(MAX_WAVEFORM_TIMESTEPS 16384)
 
 # Maximum number of simultaneous tones per channel
 set(AOD_MAX_TONES 128)
-
-# Waveform timestep (samples)
-set(WAVEFORM_TIMESTEP 512)
 
 # AWG channel mask (bitwise: bit 0 = CH0, bit 1 = CH1, etc.)
 set(AWG_CHANNEL_MASK 0b1111)  # All 4 channels
@@ -964,10 +992,11 @@ set(AWG_SAMPLE_RATE 625000000)  # 625 MHz
 
 ### Time Resolution
 
-Time resolution = `WAVEFORM_TIMESTEP / AWG_SAMPLE_RATE`
+Time resolution = `1 / AWG_SAMPLE_RATE`
 
-Example with defaults:
-- 512 samples / 625 MHz = 0.8192 μs per timestep
+Example with 625 MHz sample rate:
+- 1 / 625 MHz = 1.6 ns per sample
+- Waveforms are padded to 32-sample boundaries (51.2 ns granularity) for DMA
 
 ---
 

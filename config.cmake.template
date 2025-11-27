@@ -57,19 +57,14 @@ set(AOD_MAX_TONES 128 CACHE STRING "Maximum simultaneous tones per channel")
 # Maximum number of waveform batches that can be queued
 set(MAX_WAVEFORM_BATCHES 16 CACHE STRING "Maximum queued waveform batches")
 
-# Waveform timestep (samples)
-# Discrete timestep that waveform durations must be multiples of
-# DMA buffer size must be a multiple of (WAVEFORM_TIMESTEP * bytes_per_sample * active_channels)
-set(WAVEFORM_TIMESTEP 512 CACHE STRING "Waveform timestep in samples")
-
 # Maximum number of timesteps in global waveform batch arrays
+# Timesteps are now direct sample indices (not multiplied by a constant)
 # This defines the size of the unified timeline that combines all batches
 set(MAX_WAVEFORM_TIMESTEPS 16384 CACHE STRING "Maximum timesteps in batch arrays")
 
 # Waveform buffer sizes
-# IMPORTANT: AOD_DMA_BUFFER_SIZE must be a multiple of (WAVEFORM_TIMESTEP * bytes_per_sample * active_channels)
-# For 16-bit samples (2 bytes) and 4 channels: multiple of 512 * 2 * 4 = 4096 bytes
-set(AOD_DMA_BUFFER_SIZE 2097152 CACHE STRING "DMA buffer size in bytes (8 MB)")
+# IMPORTANT: Waveforms are automatically padded to 32-sample alignment for DMA
+set(AOD_DMA_BUFFER_SIZE 2097152 CACHE STRING "DMA buffer size in bytes (2 MB)")
 set(AOD_NOTIFY_SIZE 131072 CACHE STRING "Notification chunk size in bytes (500 KB)")
 set(AOD_HW_BUFFER_SIZE 1048576 CACHE STRING "Hardware buffer size in bytes (64 MB)")
 
